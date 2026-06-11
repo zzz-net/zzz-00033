@@ -1,0 +1,5 @@
+batch_name: "reviewer-batch"
+root_alias: "review"
+required_files:
+  - pattern: "README.md"
+  - pattern: "slot*.txt"

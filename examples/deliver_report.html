@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>交付检查报告 - 交付样例-2026-Q2</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; padding: 24px; background: #f5f7fa; color: #303133; }
+  .container { max-width: 1200px; margin: 0 auto; }
+  h1 { margin: 0 0 8px; font-size: 24px; }
+  .meta { color: #909399; font-size: 13px; margin-bottom: 20px; }
+  .meta span { margin-right: 20px; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .stat-card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+  .stat-card .num { font-size: 28px; font-weight: 600; margin-bottom: 4px; }
+  .stat-card .label { font-size: 13px; color: #606266; }
+  .section-title { font-size: 16px; font-weight: 600; margin: 24px 0 12px; padding-left: 10px; border-left: 4px solid #409eff; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+  th, td { padding: 10px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid #ebeef5; vertical-align: top; }
+  th { background: #fafafa; font-weight: 600; color: #606266; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fafcff; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 500; }
+  .type-missing { background: #fef0f0; color: #f56c6c; }
+  .type-naming { background: #fdf6ec; color: #e6a23c; }
+  .type-expired { background: #fde2e2; color: #c45656; }
+  .type-duplicate { background: #faecd8; color: #b88230; }
+  .type-untracked { background: #ecf5ff; color: #409eff; }
+  .status-pending { background: #f4f4f5; color: #909399; }
+  .status-passed { background: #f0f9eb; color: #67c23a; }
+  .status-ignored { background: #f4f4f5; color: #606266; }
+  .status-todo { background: #fef0f0; color: #f56c6c; }
+  .idx { color: #909399; font-variant-numeric: tabular-nums; }
+  .path { font-family: "SF Mono", Consolas, monospace; color: #303133; word-break: break-all; }
+  .detail { color: #606266; margin-top: 4px; font-size: 12px; }
+  .reviewer { color: #409eff; }
+  .empty { text-align: center; padding: 40px; color: #909399; background: #fff; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>交付检查报告 - 交付样例-2026-Q2</h1>
+  <div class="meta">
+    <span>批次：交付样例-2026-Q2</span>
+    <span>资料目录：D:\workSpace\AI__SPACE\zzz-00033\examples\sample_data</span>
+    <span>导出时间：2026-06-12 01:11:27</span>
+    <span>总问题数：9</span>
+  </div>
+
+  <div class="summary"><div class="stat-card"><div class="num" style="color:#303133">9</div><div class="label">总计</div></div><div class="stat-card"><div class="num" style="color:#f56c6c">3</div><div class="label">必需文件缺失</div></div><div class="stat-card"><div class="num" style="color:#e6a23c">0</div><div class="label">命名不符合规范</div></div><div class="stat-card"><div class="num" style="color:#c45656">1</div><div class="label">文件已过期</div></div><div class="stat-card"><div class="num" style="color:#b88230">0</div><div class="label">重复文件</div></div><div class="stat-card"><div class="num" style="color:#409eff">5</div><div class="label">未纳入规则的文件</div></div><div class="stat-card"><div class="num" style="color:#67c23a">1</div><div class="label">通过</div></div><div class="stat-card"><div class="num" style="color:#606266">1</div><div class="label">忽略</div></div><div class="stat-card"><div class="num" style="color:#f56c6c">0</div><div class="label">待补充</div></div></div>
+
+  <div class="section-title">问题列表</div><table><thead><tr><th style="width:48px">#</th><th style="width:120px">类型</th><th style="width:220px">路径</th><th>问题描述</th><th style="width:96px">状态</th><th style="width:140px">处理人</th><th>备注</th></tr></thead><tbody><tr><td class="idx">1</td><td><span class="badge type-missing">必需文件缺失</span></td><td class="path">CHANGELOG.md</td><td>缺少必需文件或目录匹配项: CHANGELOG.md（版本变更记录）<div class="detail">版本变更记录</div></td><td><span class="badge status-passed">通过</span></td><td><span class="reviewer">张三</span><div class="detail">2026-06-12T01:11:25</div></td><td>邮件确认客户已单独提供</td></tr><tr><td class="idx">2</td><td><span class="badge type-missing">必需文件缺失</span></td><td class="path">config/config.yaml</td><td>缺少必需文件或目录匹配项: config/config.yaml（部署配置模板）<div class="detail">部署配置模板</div></td><td><span class="badge status-ignored">忽略</span></td><td><span class="reviewer">李四</span><div class="detail">2026-06-12T01:11:25</div></td><td>该配置模板由运维平台统一管理</td></tr><tr><td class="idx">3</td><td><span class="badge type-missing">必需文件缺失</span></td><td class="path">docs/**/*.md</td><td>缺少必需文件或目录匹配项: docs/**/*.md（设计与需求文档（至少一个））<div class="detail">设计与需求文档（至少一个）</div></td><td><span class="badge status-pending">待复核</span></td><td></td><td></td></tr><tr><td class="idx">4</td><td><span class="badge type-expired">文件已过期</span></td><td class="path">docs/requirements.docx</td><td>文件修改时间早于要求的 2026-06-01<div class="detail">实际修改时间: 2026-03-15 10:00:00</div></td><td><span class="badge status-pending">待复核</span></td><td></td><td></td></tr><tr><td class="idx">5</td><td><span class="badge type-untracked">未纳入规则的文件</span></td><td class="path">docs/design.md</td><td>文件不在规则清单中<div class="detail">未被任何 required_files 规则匹配</div></td><td><span class="badge status-pending">待复核</span></td><td></td><td></td></tr><tr><td class="idx">6</td><td><span class="badge type-untracked">未纳入规则的文件</span></td><td class="path">extra_readme.txt</td><td>文件不在规则清单中<div class="detail">未被任何 required_files 规则匹配</div></td><td><span class="badge status-pending">待复核</span></td><td></td><td></td></tr><tr><td class="idx">7</td><td><span class="badge type-untracked">未纳入规则的文件</span></td><td class="path">src/main.py</td><td>文件不在规则清单中<div class="detail">未被任何 required_files 规则匹配</div></td><td><span class="badge status-pending">待复核</span></td><td></td><td></td></tr><tr><td class="idx">8</td><td><span class="badge type-untracked">未纳入规则的文件</span></td><td class="path">src/utils.py</td><td>文件不在规则清单中<div class="detail">未被任何 required_files 规则匹配</div></td><td><span class="badge status-pending">待复核</span></td><td></td><td></td></tr><tr><td class="idx">9</td><td><span class="badge type-untracked">未纳入规则的文件</span></td><td class="path">temp_scratch.tmp</td><td>文件不在规则清单中<div class="detail">未被任何 required_files 规则匹配</div></td><td><span class="badge status-pending">待复核</span></td><td></td><td></td></tr></tbody></table>
+</div>
+</body>
+</html>

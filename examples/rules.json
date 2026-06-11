@@ -1,0 +1,42 @@
+{
+  "batch_name": "交付样例-JSON版",
+  "root_alias": "交付资料包",
+  "expiry_date": "2026-01-01",
+  "ignore_patterns": [
+    "**/.git/**",
+    "**/__pycache__/**",
+    "**/*.log",
+    "**/Thumbs.db",
+    "**/.DS_Store"
+  ],
+  "required_files": [
+    {
+      "pattern": "README.md",
+      "description": "项目说明文档"
+    },
+    {
+      "pattern": "docs/**/*.md",
+      "description": "设计与需求文档"
+    },
+    {
+      "pattern": "src/**/*.py",
+      "description": "Python 源码目录"
+    },
+    {
+      "pattern": "tests/**/*.py",
+      "description": "单元测试文件",
+      "optional": true
+    }
+  ],
+  "naming_rules": [
+    {
+      "pattern": "build/report*.pdf",
+      "regex": "^test_report_(\\d{8})\\.pdf$",
+      "description": "形如 test_report_20260612.pdf"
+    }
+  ],
+  "metadata": {
+    "client": "示例客户",
+    "project": "JSON版样例"
+  }
+}

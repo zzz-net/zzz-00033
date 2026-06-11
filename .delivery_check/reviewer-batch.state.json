@@ -1,0 +1,59 @@
+{
+  "batch_name": "reviewer-batch",
+  "data_dir": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\data",
+  "rules": {
+    "batch_name": "reviewer-batch",
+    "root_alias": "review",
+    "required_files": [
+      {
+        "pattern": "README.md",
+        "description": "",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null
+      },
+      {
+        "pattern": "slot*.txt",
+        "description": "",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null
+      }
+    ],
+    "naming_rules": [],
+    "ignore_patterns": [],
+    "expiry_date": null,
+    "metadata": {},
+    "source_path": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\rules.yaml",
+    "source_hash": "910d437ad74d2099"
+  },
+  "rules_hash": "910d437ad74d2099",
+  "issues": {
+    "e111b1f3298e": {
+      "id": "e111b1f3298e",
+      "type": "untracked",
+      "path": "extra.bin",
+      "message": "文件不在规则清单中",
+      "detail": "未被任何 required_files 规则匹配",
+      "status": "ignored",
+      "reviewer": "ReviewerB",
+      "note": "resume-note",
+      "reviewed_at": "2026-06-12T01:20:33",
+      "group_key": null,
+      "type_label": "未纳入规则的文件",
+      "status_label": "忽略"
+    }
+  },
+  "undo_stack": [
+    {
+      "issue_id": "e111b1f3298e",
+      "prev_status": "pending",
+      "prev_reviewer": null,
+      "prev_note": "",
+      "prev_reviewed_at": null,
+      "timestamp": "2026-06-12T01:20:33"
+    }
+  ],
+  "created_at": "2026-06-12T01:19:08",
+  "updated_at": "2026-06-12T01:20:33"
+}
