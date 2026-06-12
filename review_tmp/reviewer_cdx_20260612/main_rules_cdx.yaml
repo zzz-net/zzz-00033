@@ -1,16 +1,6 @@
-# 资料包交付检查规则 - 样例
-# 支持 glob 通配符: * 匹配任意字符, ** 匹配任意层级
-# 命名规则使用 Python 正则表达式 (re.match)
-
-# ---------- 基础信息 ----------
-batch_name: "交付样例-2026-Q2"  # 批次唯一标识，决定续办/状态文件名
+batch_name: "reviewer-main-codex-20260612"
 root_alias: "交付资料包"
-
-# ---------- 全局设置 ----------
-# 全局过期日期（ISO 格式），仅当单条规则未指定 expiry_date 时生效
 expiry_date: "2026-01-01"
-
-# 扫描时忽略的文件/目录（glob）
 ignore_patterns:
   - "**/.git/**"
   - "**/__pycache__/**"
@@ -18,63 +8,39 @@ ignore_patterns:
   - "**/*.log"
   - "**/Thumbs.db"
   - "**/.DS_Store"
-
-# ---------- 必需文件清单 ----------
-# 每条规则：pattern（glob，必填）、description、optional、naming_rule、expiry_date
 required_files:
-  # 文档类
   - pattern: "README.md"
     description: "项目说明文档"
-
   - pattern: "docs/**/*.md"
     description: "设计与需求文档（至少一个）"
-
   - pattern: "docs/requirements.docx"
     description: "签字版需求文档（非可选）"
     naming_rule: "signature-doc"
     expiry_date: "2026-06-01"
-
-  # 代码类
   - pattern: "src/**/*.py"
     description: "Python 源码目录（必需）"
-
   - pattern: "tests/**/*.py"
     description: "单元测试文件"
     optional: true
-
-  # 交付物
   - pattern: "build/report*.pdf"
     description: "最终交付测试报告"
     naming_rule: "report-date"
-
   - pattern: "config/config.yaml"
     description: "部署配置模板"
-
   - pattern: "CHANGELOG.md"
     description: "版本变更记录"
-
-  # 单槽位示例：只能匹配到 1 个文件，多了视为重复
   - pattern: "deliverables/slot_*.txt"
     description: "交付槽位文件（仅允许 1 份）"
     max_matches: 1
-
-# ---------- 命名规则 ----------
-# naming_rules 中每条规则通过 name 字段与 required_files.naming_rule 关联
-# 若未指定 name，则以 pattern 作为名字（不推荐）
 naming_rules:
   - name: "signature-doc"
     pattern: "docs/requirements.docx"
     regex: "^requirements_(v\\d{4}\\.\\d{2})_签字版\\.docx$"
     description: "文件名必须形如 requirements_v2026.02_签字版.docx"
-
   - name: "report-date"
     pattern: "build/report*.pdf"
     regex: "^test_report_(\\d{8})\\.pdf$"
     description: "文件名必须形如 test_report_20260612.pdf"
-
-# ---------- 任意附加元数据 ----------
 metadata:
-  client: "示例客户"
-  project: "交付样例项目"
-  version: "1.0.0"
-  owner: "交付组"
+  client: "reviewer"
+

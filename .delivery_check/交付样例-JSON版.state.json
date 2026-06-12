@@ -1,8 +1,8 @@
 {
-  "batch_name": "交付样例-2026-Q2",
+  "batch_name": "交付样例-JSON版",
   "data_dir": "D:\\workSpace\\AI__SPACE\\zzz-00033\\examples\\sample_data",
   "rules": {
-    "batch_name": "交付样例-2026-Q2",
+    "batch_name": "交付样例-JSON版",
     "root_alias": "交付资料包",
     "required_files": [
       {
@@ -15,23 +15,31 @@
       },
       {
         "pattern": "docs/**/*.md",
-        "description": "设计与需求文档（至少一个）",
+        "description": "设计与需求文档",
         "optional": false,
         "naming_rule": null,
         "expiry_date": null,
         "max_matches": null
       },
       {
-        "pattern": "docs/requirements.docx",
-        "description": "签字版需求文档（非可选）",
+        "pattern": "docs/**/requirements.docx",
+        "description": "签字版需求文档",
         "optional": false,
         "naming_rule": "signature-doc",
         "expiry_date": "2026-06-01",
         "max_matches": null
       },
       {
+        "pattern": "build/report*.pdf",
+        "description": "测试报告 PDF",
+        "optional": false,
+        "naming_rule": "report-date",
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
         "pattern": "src/**/*.py",
-        "description": "Python 源码目录（必需）",
+        "description": "Python 源码目录",
         "optional": false,
         "naming_rule": null,
         "expiry_date": null,
@@ -46,32 +54,8 @@
         "max_matches": null
       },
       {
-        "pattern": "build/report*.pdf",
-        "description": "最终交付测试报告",
-        "optional": false,
-        "naming_rule": "report-date",
-        "expiry_date": null,
-        "max_matches": null
-      },
-      {
-        "pattern": "config/config.yaml",
-        "description": "部署配置模板",
-        "optional": false,
-        "naming_rule": null,
-        "expiry_date": null,
-        "max_matches": null
-      },
-      {
-        "pattern": "CHANGELOG.md",
-        "description": "版本变更记录",
-        "optional": false,
-        "naming_rule": null,
-        "expiry_date": null,
-        "max_matches": null
-      },
-      {
         "pattern": "deliverables/slot_*.txt",
-        "description": "交付槽位文件（仅允许 1 份）",
+        "description": "交付槽位文件（同一槽位仅允许 1 份）",
         "optional": false,
         "naming_rule": null,
         "expiry_date": null,
@@ -80,22 +64,21 @@
     ],
     "naming_rules": [
       {
-        "pattern": "docs/requirements.docx",
+        "pattern": "docs/**/requirements.docx",
         "regex": "^requirements_(v\\d{4}\\.\\d{2})_签字版\\.docx$",
         "name": "signature-doc",
-        "description": "文件名必须形如 requirements_v2026.02_签字版.docx"
+        "description": "形如 requirements_v2026.02_签字版.docx"
       },
       {
         "pattern": "build/report*.pdf",
         "regex": "^test_report_(\\d{8})\\.pdf$",
         "name": "report-date",
-        "description": "文件名必须形如 test_report_20260612.pdf"
+        "description": "形如 test_report_20260612.pdf"
       }
     ],
     "ignore_patterns": [
       "**/.git/**",
       "**/__pycache__/**",
-      "**/node_modules/**",
       "**/*.log",
       "**/Thumbs.db",
       "**/.DS_Store"
@@ -103,49 +86,19 @@
     "expiry_date": "2026-01-01",
     "metadata": {
       "client": "示例客户",
-      "project": "交付样例项目",
-      "version": "1.0.0",
-      "owner": "交付组"
+      "project": "JSON版样例"
     },
-    "source_path": "D:\\workSpace\\AI__SPACE\\zzz-00033\\examples\\rules.yaml",
-    "source_hash": "93547640a8d3d3cd"
+    "source_path": "D:\\workSpace\\AI__SPACE\\zzz-00033\\examples\\rules.json",
+    "source_hash": "94e4041f3bb16383"
   },
-  "rules_hash": "93547640a8d3d3cd",
+  "rules_hash": "94e4041f3bb16383",
   "issues": {
-    "af627d3f24b6": {
-      "id": "af627d3f24b6",
-      "type": "missing",
-      "path": "config/config.yaml",
-      "message": "缺少必需文件或目录匹配项: config/config.yaml（部署配置模板）",
-      "detail": "部署配置模板",
-      "status": "ignored",
-      "reviewer": "李四",
-      "note": "客户豁免此项",
-      "reviewed_at": "2026-06-12T08:56:48",
-      "group_key": null,
-      "type_label": "必需文件缺失",
-      "status_label": "忽略"
-    },
-    "f978968913c5": {
-      "id": "f978968913c5",
-      "type": "missing",
-      "path": "CHANGELOG.md",
-      "message": "缺少必需文件或目录匹配项: CHANGELOG.md（版本变更记录）",
-      "detail": "版本变更记录",
-      "status": "passed",
-      "reviewer": "张三",
-      "note": "已单独邮件确认",
-      "reviewed_at": "2026-06-12T08:56:48",
-      "group_key": null,
-      "type_label": "必需文件缺失",
-      "status_label": "通过"
-    },
     "a2696823ecd6": {
       "id": "a2696823ecd6",
       "type": "naming",
       "path": "docs/requirements.docx",
       "message": "文件命名不符合规则「signature-doc」",
-      "detail": "要求: 文件名必须形如 requirements_v2026.02_签字版.docx",
+      "detail": "要求: 形如 requirements_v2026.02_签字版.docx",
       "status": "pending",
       "reviewer": null,
       "note": "",
@@ -159,7 +112,7 @@
       "type": "naming",
       "path": "build/report_final.pdf",
       "message": "文件命名不符合规则「report-date」",
-      "detail": "要求: 文件名必须形如 test_report_20260612.pdf",
+      "detail": "要求: 形如 test_report_20260612.pdf",
       "status": "pending",
       "reviewer": null,
       "note": "",
@@ -253,24 +206,7 @@
       "status_label": "待复核"
     }
   },
-  "undo_stack": [
-    {
-      "issue_id": "f978968913c5",
-      "prev_status": "pending",
-      "prev_reviewer": null,
-      "prev_note": "",
-      "prev_reviewed_at": null,
-      "timestamp": "2026-06-12T08:56:48"
-    },
-    {
-      "issue_id": "af627d3f24b6",
-      "prev_status": "pending",
-      "prev_reviewer": null,
-      "prev_note": "",
-      "prev_reviewed_at": null,
-      "timestamp": "2026-06-12T08:56:48"
-    }
-  ],
-  "created_at": "2026-06-12T08:42:34",
-  "updated_at": "2026-06-12T09:46:06"
+  "undo_stack": [],
+  "created_at": "2026-06-12T09:10:28",
+  "updated_at": "2026-06-12T09:10:28"
 }

@@ -1,0 +1,6 @@
+batch_name: "reviewer-slot-codex-20260612"
+root_alias: "reviewer-data"
+required_files:
+  - pattern: "README.md"
+  - pattern: "slot_*.txt"
+    max_matches: 1

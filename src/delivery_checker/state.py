@@ -49,26 +49,35 @@ def list_batches(base_dir: str) -> List[Dict[str, Any]]:
     if not os.path.isdir(state_dir):
         return []
     batches: List[Dict[str, Any]] = []
-    for fn in os.listdir(state_dir):
+    for fn in sorted(os.listdir(state_dir)):
         if not fn.endswith(STATE_FILE_SUFFIX):
             continue
         try:
             with open(os.path.join(state_dir, fn), "r", encoding="utf-8") as f:
                 data = json.load(f)
+            issues_raw = data.get("issues", {})
+            if isinstance(issues_raw, dict):
+                issue_list = list(issues_raw.values())
+            elif isinstance(issues_raw, list):
+                issue_list = issues_raw
+            else:
+                issue_list = []
+            issue_count = len(issue_list)
+            pending_count = sum(
+                1 for i in issue_list
+                if isinstance(i, dict) and i.get("status") == ReviewStatus.PENDING.value
+            )
             batches.append({
                 "batch_name": data.get("batch_name", fn[:-len(STATE_FILE_SUFFIX)]),
                 "data_dir": data.get("data_dir", ""),
-                "rules_path": data.get("rules", {}).get("source_path", ""),
+                "rules_path": (data.get("rules", {}) or {}).get("source_path", ""),
                 "created_at": data.get("created_at", ""),
                 "updated_at": data.get("updated_at", ""),
-                "issue_count": len(data.get("issues", [])),
-                "pending_count": sum(
-                    1 for i in data.get("issues", [])
-                    if i.get("status") == ReviewStatus.PENDING.value
-                ),
+                "issue_count": issue_count,
+                "pending_count": pending_count,
                 "state_file": os.path.join(state_dir, fn),
             })
-        except Exception:
+        except Exception as e:
             continue
     batches.sort(key=lambda b: b.get("updated_at", ""), reverse=True)
     return batches

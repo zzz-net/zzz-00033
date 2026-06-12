@@ -1,0 +1,72 @@
+{
+  "batch_name": "reviewer-slot-codex-20260612b",
+  "data_dir": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\reviewer_cdx_20260612\\slot_data",
+  "rules": {
+    "batch_name": "reviewer-slot-codex-20260612b",
+    "root_alias": "交付资料包",
+    "required_files": [
+      {
+        "pattern": "slot_*.txt",
+        "description": "单槽位文件",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": 1
+      }
+    ],
+    "naming_rules": [],
+    "ignore_patterns": [],
+    "expiry_date": null,
+    "metadata": {},
+    "source_path": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\reviewer_cdx_20260612\\slot_rules_cdx.yaml",
+    "source_hash": "95f461493ddbbd03"
+  },
+  "rules_hash": "95f461493ddbbd03",
+  "issues": {
+    "2cf1ff86f7b9": {
+      "id": "2cf1ff86f7b9",
+      "type": "duplicate",
+      "path": "slot_b.txt",
+      "message": "与 slot_a.txt 内容完全相同",
+      "detail": "文件大小: 11 bytes, 副本数: 2",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": "dup-7be327a8",
+      "type_label": "重复文件",
+      "status_label": "待复核"
+    },
+    "203b81e67157": {
+      "id": "203b81e67157",
+      "type": "duplicate",
+      "path": "slot_b.txt",
+      "message": "超出必需槽位「slot_*.txt」的数量限制（最多 1 个）",
+      "detail": "已匹配 2 个文件: slot_a.txt, slot_b.txt",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": "slot-slot_*.txt",
+      "type_label": "重复文件",
+      "status_label": "待复核"
+    },
+    "e111b1f3298e": {
+      "id": "e111b1f3298e",
+      "type": "untracked",
+      "path": "extra.bin",
+      "message": "文件不在规则清单中",
+      "detail": "未被任何 required_files 规则匹配",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "未纳入规则的文件",
+      "status_label": "待复核"
+    }
+  },
+  "undo_stack": [],
+  "created_at": "2026-06-12T09:57:17",
+  "updated_at": "2026-06-12T09:57:17"
+}

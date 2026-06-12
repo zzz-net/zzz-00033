@@ -1,0 +1,4 @@
+batch_name: "reviewer-missing-codex-20260612"
+root_alias: "交付资料包"
+required_files:
+  - pattern: "README.md"

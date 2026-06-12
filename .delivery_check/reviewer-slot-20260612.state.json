@@ -1,0 +1,80 @@
+{
+  "batch_name": "reviewer-slot-20260612",
+  "data_dir": "C:\\Users\\admin\\AppData\\Local\\Temp\\1\\zzz-00033-reviewer-20260612\\custom_data",
+  "rules": {
+    "batch_name": "reviewer-slot-20260612",
+    "root_alias": "ReviewerCase",
+    "required_files": [
+      {
+        "pattern": "README.md",
+        "description": "",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "slot_*.txt",
+        "description": "",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": 1
+      }
+    ],
+    "naming_rules": [],
+    "ignore_patterns": [],
+    "expiry_date": null,
+    "metadata": {},
+    "source_path": "C:\\Users\\admin\\AppData\\Local\\Temp\\1\\zzz-00033-reviewer-20260612\\rules_custom.yaml",
+    "source_hash": "1326a20b54ade62a"
+  },
+  "rules_hash": "1326a20b54ade62a",
+  "issues": {
+    "41fdf81a31fd": {
+      "id": "41fdf81a31fd",
+      "type": "duplicate",
+      "path": "slot_b.txt",
+      "message": "与 slot_a.txt 内容完全相同",
+      "detail": "文件大小: 16 bytes, 副本数: 2",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": "dup-0cc75f64",
+      "type_label": "重复文件",
+      "status_label": "待复核"
+    },
+    "203b81e67157": {
+      "id": "203b81e67157",
+      "type": "duplicate",
+      "path": "slot_b.txt",
+      "message": "超出必需槽位「slot_*.txt」的数量限制（最多 1 个）",
+      "detail": "已匹配 2 个文件: slot_a.txt, slot_b.txt",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": "slot-slot_*.txt",
+      "type_label": "重复文件",
+      "status_label": "待复核"
+    },
+    "e111b1f3298e": {
+      "id": "e111b1f3298e",
+      "type": "untracked",
+      "path": "extra.bin",
+      "message": "文件不在规则清单中",
+      "detail": "未被任何 required_files 规则匹配",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "未纳入规则的文件",
+      "status_label": "待复核"
+    }
+  },
+  "undo_stack": [],
+  "created_at": "2026-06-12T09:24:38",
+  "updated_at": "2026-06-12T09:25:31"
+}

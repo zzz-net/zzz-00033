@@ -20,12 +20,14 @@ class RequiredFile:
     optional: bool = False
     naming_rule: Optional[str] = None
     expiry_date: Optional[str] = None
+    max_matches: Optional[int] = None
 
 
 @dataclass
 class NamingRule:
     pattern: str
     regex: str
+    name: str = ""
     description: str = ""
 
 
@@ -52,6 +54,7 @@ class CheckRules:
                     "optional": rf.optional,
                     "naming_rule": rf.naming_rule,
                     "expiry_date": rf.expiry_date,
+                    "max_matches": rf.max_matches,
                 }
                 for rf in self.required_files
             ],
@@ -59,6 +62,7 @@ class CheckRules:
                 {
                     "pattern": nr.pattern,
                     "regex": nr.regex,
+                    "name": nr.name,
                     "description": nr.description,
                 }
                 for nr in self.naming_rules
@@ -84,6 +88,7 @@ def _parse_required_file(data: Any) -> RequiredFile:
         optional=bool(data.get("optional", False)),
         naming_rule=data.get("naming_rule"),
         expiry_date=data.get("expiry_date"),
+        max_matches=data.get("max_matches"),
     )
 
 
@@ -92,9 +97,11 @@ def _parse_naming_rule(data: Any) -> NamingRule:
         raise ConfigError(f"naming_rules 条目格式错误: {data}")
     if "pattern" not in data or "regex" not in data:
         raise ConfigError(f"naming_rules 条目必须包含 pattern 和 regex: {data}")
+    name = str(data.get("name", "") or data.get("pattern", ""))
     return NamingRule(
         pattern=data["pattern"],
         regex=data["regex"],
+        name=name,
         description=data.get("description", ""),
     )
 

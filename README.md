@@ -112,10 +112,15 @@ dc.bat scan examples\rules.yaml examples\sample_data
    规则文件: D:\...\examples\rules.yaml
 
 📊 扫描结果统计:
-   总计问题: 9   待复核: 9   通过: 0   忽略: 0   待补充: 0
+   总计问题: 10   待复核: 10   通过: 0   忽略: 0   待补充: 0
 ```
 
-> 同批次 5 类问题均被识别：缺失 CHANGELOG.md、config/config.yaml；命名不合规的 requirements.docx、report_final.pdf；过期的 requirements.docx（mtime=2026-03-15 < 2026-06-01）；main_copy.py 与 main.py 重复；extra_readme.txt、temp_scratch.tmp 未纳入规则。
+> 同批次 5 类问题均被识别：
+> - **缺失 2**：CHANGELOG.md、config/config.yaml
+> - **命名 2**：docs/requirements.docx（不符合签字版命名）、build/report_final.pdf（不符合日期命名）
+> - **过期 1**：docs/requirements.docx（mtime=2026-03-15 < 2026-06-01）
+> - **重复 2**：src/backup/main_copy.py（与 src/main.py 内容相同）、deliverables/slot_b.txt（同槽位最多允许 1 份）
+> - **未纳入 3**：extra_readme.txt、temp_scratch.tmp、deliverables/extra.bin
 
 ### 步骤 3：交互式复核
 
@@ -127,7 +132,7 @@ dc.bat review 交付样例-2026-Q2 --reviewer "张工"
 
 ```
 📋 批次「交付样例-2026-Q2」问题概览
-   总数: 9  待复核: 9
+   总数: 10  待复核: 10
 
    #  类型      状态    路径 / 描述
   1  必需文件缺失  待复核  CHANGELOG.md
@@ -302,18 +307,28 @@ required_files:
   - pattern: "docs/requirements.docx"
     description: "签字版需求文档"
     optional: false              # 设 true 则缺失不告警
-    naming_rule: "signature-doc" # 关联下方命名规则
+    naming_rule: "signature-doc" # 关联下方命名规则的 name 字段
     expiry_date: "2026-06-01"   # 单独过期日（优先于全局）
 
   - pattern: "tests/**/*.py"
     description: "单元测试（可选）"
     optional: true
 
+  - pattern: "deliverables/slot_*.txt"
+    description: "交付槽位文件（同一槽位仅允许 1 份）"
+    max_matches: 1              # 同规则匹配的文件数上限（默认：无通配时=1，含通配时=不限制）
+
 # ====== 可选：命名规则（与 required_files 条目联动） ======
 naming_rules:
-  - pattern: "docs/requirements.docx"
+  - name: "signature-doc"        # 推荐显式命名，与 required_files.naming_rule 对应
+    pattern: "docs/**/requirements.docx"
     regex: "^requirements_(v\\d{4}\\.\\d{2})_签字版\\.docx$"
     description: "形如 requirements_v2026.02_签字版.docx"
+
+  - name: "report-date"
+    pattern: "build/report*.pdf"
+    regex: "^test_report_(\\d{8})\\.pdf$"
+    description: "形如 test_report_20260612.pdf"
 
 # ====== 可选：任意元数据（会保存在状态中） ======
 metadata:
@@ -324,14 +339,22 @@ metadata:
 
 ### 支持的 glob 语法
 
-- `*` 匹配任意字符（不跨目录分隔符）
-- `**` 匹配任意层级子目录
+- `*` 匹配任意字符（**不跨**目录分隔符 `/`）
+- `**` 匹配零或任意层级子目录（可匹配零段路径，例如 `docs/**/*.md` 既能匹配 `docs/a.md` 也能匹配 `docs/sub/a.md`）
 - `?` 匹配单个字符
-- 支持同时按**文件全名**和**纯 basename** 匹配
+- `[...]` 字符类
+- 匹配基于**完整相对路径**，不会仅用 basename 回退
 
 ### 命名规则正则
 
 使用 Python `re.match`（从文件名开头匹配），对**文件 basename（不含路径）** 进行校验。
+
+### max_matches 行为
+
+当一个 `required_files[i]` 条目匹配到多个文件时：
+- 若 pattern **不含**通配符（如 `README.md`），默认 `max_matches=1`，多余文件按「重复」告警
+- 若 pattern **含**通配符（如 `docs/**/*.md`），默认不限制（匹配多少都可以）
+- 可显式设置 `max_matches` 覆盖默认行为（例如样例中的 `slot_*.txt` 限制为 1）
 
 ---
 
@@ -404,7 +427,7 @@ dc.bat mark "交付样例-2026-Q2" todo --ids 3 -r "王五" -n "需需求补全"
 dc.bat export "交付样例-2026-Q2" examples\result.html
 dc.bat export "交付样例-2026-Q2" examples\result.csv
 
-# 4) 续办验证：重新 scan，统计显示 1通过+1忽略+1待补充
+# 4) 续办验证：重新 scan，统计显示 1通过+1忽略+1待补充（总数 10）
 dc.bat scan examples\rules.yaml examples\sample_data
 
 # 5) 撤销 1 步 + 撤销空历史验证
