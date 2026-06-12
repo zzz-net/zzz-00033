@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 import json
 import hashlib
@@ -87,6 +88,20 @@ from delivery_checker.compare import (
     _compute_match_key,
     _normalize_path,
     _detect_changes,
+)
+from delivery_checker.snapshot import (
+    Snapshot,
+    SnapshotConflictError,
+    SnapshotFormatError,
+    SnapshotNotFoundError,
+    SnapshotPermissionError,
+    SnapshotBatchNotFoundError,
+    create_snapshot,
+    delete_snapshot,
+    export_snapshot,
+    get_snapshot,
+    import_snapshot,
+    list_snapshots,
 )
 
 
@@ -3357,6 +3372,797 @@ class TestCompareCliEndToEnd(unittest.TestCase):
                 header = f.readline()
             self.assertIn("差异类型", header)
             self.assertIn("匹配键", header)
+
+
+class TestSnapshotCoreLogic(unittest.TestCase):
+    """快照核心逻辑：创建、查询、导出、导入、删除"""
+
+    def _make_issues(self, count, tmp):
+        from delivery_checker.models import Issue, IssueType, ReviewStatus
+        issues = []
+        for i in range(count):
+            status = ReviewStatus.PENDING
+            if i % 3 == 0:
+                status = ReviewStatus.PASSED
+            elif i % 3 == 1:
+                status = ReviewStatus.IGNORED
+            issues.append(Issue(
+                id=f"issue-{i}",
+                type=IssueType.MISSING,
+                path=f"file_{i}.txt",
+                message=f"文件 {i} 缺失",
+                status=status,
+                reviewer=f"reviewer_{i}" if i % 2 == 0 else None,
+                note=f"备注 {i}" if i % 2 == 0 else "",
+            ))
+        return issues
+
+    def _make_batch_state(self, tmp, batch_name, issues):
+        from delivery_checker.state import BatchState
+        from delivery_checker.config import CheckRules, RequiredFile, NamingRule
+        rules = CheckRules(
+            batch_name=batch_name,
+            root_alias="test",
+            required_files=[
+                RequiredFile(pattern="a.txt"),
+                RequiredFile(pattern="b.txt"),
+                RequiredFile(pattern="c.txt"),
+            ],
+            naming_rules=[
+                NamingRule(name="r1", pattern="*.txt", regex="^.*$"),
+            ],
+            ignore_patterns=["*.log", "*.tmp"],
+        )
+        rules.source_path = os.path.join(tmp, "rules.yaml")
+        state = BatchState.new(rules, tmp)
+        state.issues = {i.id: i for i in issues}
+        return state
+
+    def test_create_snapshot_from_batch(self):
+        """从批次创建快照"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(6, tmp)
+            state = self._make_batch_state(tmp, "test-batch", issues)
+            state.save(tmp)
+
+            snapshot = create_snapshot(
+                base_dir=tmp,
+                name="snap-1",
+                description="测试快照",
+                source_batch_name="test-batch",
+            )
+
+            self.assertEqual(snapshot.name, "snap-1")
+            self.assertEqual(snapshot.description, "测试快照")
+            self.assertEqual(snapshot.source_batch_name, "test-batch")
+            self.assertEqual(snapshot.issue_count, 6)
+            self.assertEqual(snapshot.status_distribution.get("passed"), 2)
+            self.assertEqual(snapshot.status_distribution.get("ignored"), 2)
+            self.assertEqual(snapshot.status_distribution.get("pending"), 2)
+            self.assertEqual(snapshot.source_rules.get("required_files_count"), 3)
+            self.assertEqual(snapshot.source_rules.get("naming_rules_count"), 1)
+            self.assertEqual(snapshot.source_rules.get("ignore_patterns_count"), 2)
+
+    def test_list_snapshots(self):
+        """列出快照"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(3, tmp)
+            state = self._make_batch_state(tmp, "batch-list", issues)
+            state.save(tmp)
+
+            create_snapshot(tmp, "snap-a", "快照 A", "batch-list")
+            time.sleep(1.1)
+            create_snapshot(tmp, "snap-b", "快照 B", "batch-list")
+
+            snapshots = list_snapshots(tmp)
+            self.assertEqual(len(snapshots), 2)
+            self.assertEqual(snapshots[0]["name"], "snap-b")
+            self.assertEqual(snapshots[1]["name"], "snap-a")
+            self.assertEqual(snapshots[0]["issue_count"], 3)
+            self.assertEqual(snapshots[0]["source_rules_required_count"], 3)
+
+    def test_get_snapshot(self):
+        """获取快照详情"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(4, tmp)
+            state = self._make_batch_state(tmp, "batch-get", issues)
+            state.save(tmp)
+
+            create_snapshot(tmp, "snap-get", "获取测试", "batch-get")
+            snapshot = get_snapshot(tmp, "snap-get")
+
+            self.assertEqual(snapshot.name, "snap-get")
+            self.assertEqual(len(snapshot.issues), 4)
+            self.assertEqual(snapshot.issues[0]["id"], "issue-0")
+            self.assertIn("status", snapshot.issues[0])
+            self.assertIn("reviewer", snapshot.issues[0])
+
+    def test_delete_snapshot(self):
+        """删除快照"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(2, tmp)
+            state = self._make_batch_state(tmp, "batch-del", issues)
+            state.save(tmp)
+
+            create_snapshot(tmp, "snap-del", "删除测试", "batch-del")
+            self.assertEqual(len(list_snapshots(tmp)), 1)
+
+            delete_snapshot(tmp, "snap-del")
+            self.assertEqual(len(list_snapshots(tmp)), 0)
+
+            with self.assertRaises(SnapshotNotFoundError):
+                get_snapshot(tmp, "snap-del")
+
+    def test_export_and_import_snapshot(self):
+        """导出和导入快照"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(5, tmp)
+            state = self._make_batch_state(tmp, "batch-exp", issues)
+            state.save(tmp)
+
+            create_snapshot(tmp, "snap-exp", "导出测试", "batch-exp")
+
+            export_path = os.path.join(tmp, "export.snapshot.json")
+            saved_path = export_snapshot(tmp, "snap-exp", export_path)
+            self.assertTrue(os.path.exists(saved_path))
+
+            with open(saved_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertEqual(data["type"], "delivery-checker-snapshot")
+            self.assertEqual(data["snapshot"]["name"], "snap-exp")
+            self.assertEqual(data["snapshot"]["issue_count"], 5)
+
+            with tempfile.TemporaryDirectory() as tmp2:
+                imported = import_snapshot(tmp2, export_path)
+                self.assertEqual(imported.name, "snap-exp")
+                self.assertEqual(imported.issue_count, 5)
+                self.assertEqual(len(list_snapshots(tmp2)), 1)
+
+    def test_import_conflict_refuse(self):
+        """导入冲突：拒绝"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(3, tmp)
+            state = self._make_batch_state(tmp, "batch-c1", issues)
+            state.save(tmp)
+
+            create_snapshot(tmp, "snap-conflict", "冲突测试", "batch-c1")
+
+            export_path = os.path.join(tmp, "conflict.snapshot.json")
+            export_snapshot(tmp, "snap-conflict", export_path)
+
+            with self.assertRaises(SnapshotConflictError):
+                import_snapshot(tmp, export_path, conflict_strategy="refuse")
+
+    def test_import_conflict_overwrite(self):
+        """导入冲突：覆盖"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(3, tmp)
+            state = self._make_batch_state(tmp, "batch-c2", issues)
+            state.save(tmp)
+
+            create_snapshot(tmp, "snap-overwrite", "原始", "batch-c2")
+            original_created = get_snapshot(tmp, "snap-overwrite").created_at
+            time.sleep(1.1)
+
+            export_path = os.path.join(tmp, "overwrite.snapshot.json")
+            export_snapshot(tmp, "snap-overwrite", export_path)
+    
+            imported = import_snapshot(tmp, export_path, conflict_strategy="overwrite")
+            self.assertEqual(imported.name, "snap-overwrite")
+            self.assertEqual(imported.created_at, original_created)
+            self.assertNotEqual(imported.updated_at, original_created)
+
+    def test_import_conflict_rename(self):
+        """导入冲突：自动改名"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(3, tmp)
+            state = self._make_batch_state(tmp, "batch-c3", issues)
+            state.save(tmp)
+
+            create_snapshot(tmp, "snap-rename", "改名测试", "batch-c3")
+
+            export_path = os.path.join(tmp, "rename.snapshot.json")
+            export_snapshot(tmp, "snap-rename", export_path)
+
+            imported = import_snapshot(tmp, export_path, conflict_strategy="rename")
+            self.assertEqual(imported.name, "snap-rename_1")
+            self.assertEqual(len(list_snapshots(tmp)), 2)
+
+    def test_import_rename_name(self):
+        """导入时指定新名称"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(2, tmp)
+            state = self._make_batch_state(tmp, "batch-rn", issues)
+            state.save(tmp)
+
+            create_snapshot(tmp, "original-name", "原名", "batch-rn")
+
+            export_path = os.path.join(tmp, "rename_name.snapshot.json")
+            export_snapshot(tmp, "original-name", export_path)
+
+            imported = import_snapshot(
+                tmp, export_path,
+                conflict_strategy="refuse",
+                rename_name="new-name"
+            )
+            self.assertEqual(imported.name, "new-name")
+
+    def test_batch_not_found(self):
+        """来源批次不存在"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SnapshotBatchNotFoundError):
+                create_snapshot(tmp, "snap", "test", "no-such-batch")
+
+    def test_snapshot_not_found(self):
+        """快照不存在"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SnapshotNotFoundError):
+                get_snapshot(tmp, "no-snap")
+            with self.assertRaises(SnapshotNotFoundError):
+                delete_snapshot(tmp, "no-snap")
+            with self.assertRaises(SnapshotNotFoundError):
+                export_snapshot(tmp, "no-snap", "out.json")
+
+    def test_snapshot_corrupted(self):
+        """快照文件损坏"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(2, tmp)
+            state = self._make_batch_state(tmp, "batch-bad", issues)
+            state.save(tmp)
+
+            create_snapshot(tmp, "bad-snap", "损坏测试", "batch-bad")
+
+            snap_path = os.path.join(
+                tmp, ".delivery_check", "snapshots", "bad-snap.snapshot.json"
+            )
+            with open(snap_path, "w", encoding="utf-8") as f:
+                f.write("{ this is not valid json !!!")
+
+            with self.assertRaises(SnapshotFormatError):
+                get_snapshot(tmp, "bad-snap")
+
+    def test_import_bad_json(self):
+        """导入坏 JSON 文件"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_path = os.path.join(tmp, "bad.json")
+            with open(bad_path, "w", encoding="utf-8") as f:
+                f.write("not json at all")
+
+            with self.assertRaises(SnapshotFormatError):
+                import_snapshot(tmp, bad_path)
+
+    def test_import_wrong_type(self):
+        """导入非快照导出文件"""
+        with tempfile.TemporaryDirectory() as tmp:
+            wrong_path = os.path.join(tmp, "wrong.json")
+            with open(wrong_path, "w", encoding="utf-8") as f:
+                json.dump({"type": "wrong-type", "data": {}}, f)
+
+            with self.assertRaises(SnapshotFormatError):
+                import_snapshot(tmp, wrong_path)
+
+    def test_import_missing_snapshot_field(self):
+        """导入缺少 snapshot 字段的文件"""
+        with tempfile.TemporaryDirectory() as tmp:
+            wrong_path = os.path.join(tmp, "missing.json")
+            with open(wrong_path, "w", encoding="utf-8") as f:
+                json.dump({"type": "delivery-checker-snapshot"}, f)
+
+            with self.assertRaises(SnapshotFormatError):
+                import_snapshot(tmp, wrong_path)
+
+    def test_from_dict_missing_fields(self):
+        """Snapshot.from_dict 缺少必填字段"""
+        with self.assertRaises(SnapshotFormatError):
+            Snapshot.from_dict({"name": "test"})
+
+    def test_persistence_across_reload(self):
+        """快照持久化：模拟重启后仍然存在"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(4, tmp)
+            state = self._make_batch_state(tmp, "batch-persist", issues)
+            state.save(tmp)
+
+            create_snapshot(tmp, "persist-snap", "持久化测试", "batch-persist")
+            self.assertEqual(len(list_snapshots(tmp)), 1)
+
+            snapshots1 = list_snapshots(tmp)
+            snap1 = get_snapshot(tmp, "persist-snap")
+
+            snapshots2 = list_snapshots(tmp)
+            self.assertEqual(len(snapshots2), 1)
+            self.assertEqual(snapshots2[0]["name"], snapshots1[0]["name"])
+
+            snap2 = get_snapshot(tmp, "persist-snap")
+            self.assertEqual(snap2.name, snap1.name)
+            self.assertEqual(snap2.issue_count, snap1.issue_count)
+            self.assertEqual(snap2.created_at, snap1.created_at)
+
+    def test_does_not_pollute_other_data(self):
+        """快照操作不污染原批次、撤销栈、规则包索引、视图预设"""
+        with tempfile.TemporaryDirectory() as tmp:
+            issues = self._make_issues(3, tmp)
+            state = self._make_batch_state(tmp, "batch-clean", issues)
+            from delivery_checker.models import UndoRecord, ReviewStatus
+            state.undo_stack = [
+                UndoRecord(
+                    issue_id=issues[0].id,
+                    prev_status=ReviewStatus.PENDING,
+                    prev_reviewer=None,
+                    prev_note="original note",
+                    prev_reviewed_at=None,
+                    timestamp="2026-01-01T00:00:00",
+                )
+            ]
+            state.save(tmp)
+
+            before_hash = hashlib.sha256()
+            state_file = os.path.join(tmp, ".delivery_check", "batch-clean.state.json")
+            with open(state_file, "rb") as f:
+                before_hash.update(f.read())
+            before_digest = before_hash.hexdigest()
+
+            create_snapshot(tmp, "clean-snap", "不污染测试", "batch-clean")
+
+            after_hash = hashlib.sha256()
+            with open(state_file, "rb") as f:
+                after_hash.update(f.read())
+            after_digest = after_hash.hexdigest()
+
+            self.assertEqual(before_digest, after_digest,
+                             "快照操作修改了原批次状态文件！")
+
+            state_after = BatchState.load(tmp, "batch-clean")
+            self.assertEqual(len(state_after.undo_stack), 1)
+            self.assertEqual(state_after.undo_stack[0].issue_id, issues[0].id)
+            self.assertEqual(state_after.undo_stack[0].prev_note, "original note")
+
+
+class TestSnapshotCliEndToEnd(unittest.TestCase):
+    """CLI 端到端测试：用真实 subprocess 跑通所有场景"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+
+    def _run_in(self, work_dir, *args):
+        import subprocess
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.path.join(self.ROOT, "src")
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["NO_COLOR"] = "1"
+        result = subprocess.run(
+            [sys.executable, "-m", "delivery_checker", *args],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=work_dir,
+        )
+        return result
+
+    def _create_rules_file(self, tmp, batch_name):
+        rules_path = os.path.join(tmp, f"rules_{batch_name}.yaml")
+        with open(rules_path, "w", encoding="utf-8") as f:
+            f.write(
+                f"batch_name: '{batch_name}'\n"
+                f"root_alias: 'test'\n"
+                f"required_files:\n"
+                f"  - 'README.md'\n"
+                f"  - 'docs/design.md'\n"
+                f"  - 'docs/**/*.md'\n"
+                f"naming_rules:\n"
+                f"  - name: 'doc-naming'\n"
+                f"    pattern: 'docs/**/*.md'\n"
+                f"    regex: '^.*$'\n"
+                f"ignore_patterns:\n"
+                f"  - '**/*.log'\n"
+            )
+        return rules_path
+
+    def _create_data_dir(self, tmp):
+        data_dir = os.path.join(tmp, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(os.path.join(data_dir, "docs"), exist_ok=True)
+        with open(os.path.join(data_dir, "README.md"), "w") as f:
+            f.write("# Test")
+        with open(os.path.join(data_dir, "docs", "design.md"), "w") as f:
+            f.write("# Design")
+        with open(os.path.join(data_dir, "extra.txt"), "w") as f:
+            f.write("extra file")
+        return data_dir
+
+    def test_cli_create_and_list_snapshot(self):
+        """CLI: 创建和列出快照"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = self._create_rules_file(tmp, "cli-batch-1")
+            data = self._create_data_dir(tmp)
+
+            r_scan = self._run_in(tmp, "scan", rules, data)
+            self.assertEqual(r_scan.returncode, 0, f"scan: {r_scan.stderr}")
+
+            r_create = self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "cli-snap-1",
+                "-d", "CLI 创建测试",
+                "-b", "cli-batch-1",
+            )
+            self.assertEqual(r_create.returncode, 0,
+                             f"create: {r_create.stderr}\nstdout: {r_create.stdout}")
+            self.assertIn("已创建快照", r_create.stdout)
+            self.assertIn("cli-snap-1", r_create.stdout)
+            self.assertIn("cli-batch-1", r_create.stdout)
+
+            r_list = self._run_in(tmp, "snapshot", "list")
+            self.assertEqual(r_list.returncode, 0, f"list: {r_list.stderr}")
+            self.assertIn("cli-snap-1", r_list.stdout)
+            self.assertIn("CLI 创建测试", r_list.stdout)
+            self.assertIn("cli-batch-1", r_list.stdout)
+            self.assertIn("问题数量", r_list.stdout)
+            self.assertIn("状态分布", r_list.stdout)
+
+    def test_cli_show_snapshot(self):
+        """CLI: 查看快照详情"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = self._create_rules_file(tmp, "cli-batch-show")
+            data = self._create_data_dir(tmp)
+
+            self._run_in(tmp, "scan", rules, data)
+
+            self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "show-snap",
+                "-d", "显示测试",
+                "-b", "cli-batch-show",
+            )
+
+            r_show = self._run_in(tmp, "snapshot", "show", "show-snap")
+            self.assertEqual(r_show.returncode, 0, f"show: {r_show.stderr}")
+            self.assertIn("show-snap", r_show.stdout)
+            self.assertIn("显示测试", r_show.stdout)
+            self.assertIn("cli-batch-show", r_show.stdout)
+            self.assertIn("规则摘要", r_show.stdout)
+            self.assertIn("问题统计", r_show.stdout)
+
+            r_show_v = self._run_in(tmp, "snapshot", "show", "show-snap", "--verbose")
+            self.assertEqual(r_show_v.returncode, 0, f"show -v: {r_show_v.stderr}")
+            self.assertIn("问题详情", r_show_v.stdout)
+
+    def test_cli_export_and_import_snapshot(self):
+        """CLI: 导出和导入快照"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = self._create_rules_file(tmp, "cli-batch-exp")
+            data = self._create_data_dir(tmp)
+
+            self._run_in(tmp, "scan", rules, data)
+
+            self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "exp-snap",
+                "-d", "导出测试",
+                "-b", "cli-batch-exp",
+            )
+
+            export_path = os.path.join(tmp, "exported.snapshot.json")
+            r_export = self._run_in(
+                tmp, "snapshot", "export", "exp-snap", export_path
+            )
+            self.assertEqual(r_export.returncode, 0, f"export: {r_export.stderr}")
+            self.assertIn("已导出快照到", r_export.stdout)
+            self.assertTrue(os.path.exists(export_path))
+
+            with tempfile.TemporaryDirectory() as tmp2:
+                r_import = self._run_in(
+                    tmp2, "snapshot", "import", export_path
+                )
+                self.assertEqual(r_import.returncode, 0,
+                                 f"import: {r_import.stderr}\nstdout: {r_import.stdout}")
+                self.assertIn("已导入快照", r_import.stdout)
+                self.assertIn("exp-snap", r_import.stdout)
+
+                r_list2 = self._run_in(tmp2, "snapshot", "list")
+                self.assertEqual(r_list2.returncode, 0, f"list2: {r_list2.stderr}")
+                self.assertIn("exp-snap", r_list2.stdout)
+
+    def test_cli_import_conflict_strategies(self):
+        """CLI: 导入冲突三种策略"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = self._create_rules_file(tmp, "cli-batch-conflict")
+            data = self._create_data_dir(tmp)
+
+            self._run_in(tmp, "scan", rules, data)
+
+            self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "conflict-snap",
+                "-d", "冲突测试",
+                "-b", "cli-batch-conflict",
+            )
+
+            export_path = os.path.join(tmp, "conflict.snapshot.json")
+            self._run_in(tmp, "snapshot", "export", "conflict-snap", export_path)
+
+            r_refuse = self._run_in(
+                tmp, "snapshot", "import", export_path,
+                "--conflict", "refuse"
+            )
+            self.assertEqual(r_refuse.returncode, 2, f"refuse: {r_refuse.stderr}")
+            self.assertIn("名称冲突", r_refuse.stderr)
+
+            r_rename = self._run_in(
+                tmp, "snapshot", "import", export_path,
+                "--conflict", "rename"
+            )
+            self.assertEqual(r_rename.returncode, 0,
+                             f"rename: {r_rename.stderr}\nstdout: {r_rename.stdout}")
+            self.assertIn("conflict-snap_1", r_rename.stdout)
+
+            r_overwrite = self._run_in(
+                tmp, "snapshot", "import", export_path,
+                "--conflict", "overwrite"
+            )
+            self.assertEqual(r_overwrite.returncode, 0,
+                             f"overwrite: {r_overwrite.stderr}\nstdout: {r_overwrite.stdout}")
+            self.assertIn("conflict-snap", r_overwrite.stdout)
+
+            r_list = self._run_in(tmp, "snapshot", "list")
+            self.assertEqual(r_list.returncode, 0)
+            self.assertIn("conflict-snap", r_list.stdout)
+            self.assertIn("conflict-snap_1", r_list.stdout)
+
+    def test_cli_import_rename_name(self):
+        """CLI: 导入时指定新名称"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = self._create_rules_file(tmp, "cli-batch-rn")
+            data = self._create_data_dir(tmp)
+
+            self._run_in(tmp, "scan", rules, data)
+
+            self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "original",
+                "-d", "原名",
+                "-b", "cli-batch-rn",
+            )
+
+            export_path = os.path.join(tmp, "rn.snapshot.json")
+            self._run_in(tmp, "snapshot", "export", "original", export_path)
+
+            r_import = self._run_in(
+                tmp, "snapshot", "import", export_path,
+                "--rename-name", "imported-new-name"
+            )
+            self.assertEqual(r_import.returncode, 0,
+                             f"import rename: {r_import.stderr}")
+            self.assertIn("imported-new-name", r_import.stdout)
+
+    def test_cli_delete_snapshot(self):
+        """CLI: 删除快照"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = self._create_rules_file(tmp, "cli-batch-del")
+            data = self._create_data_dir(tmp)
+
+            self._run_in(tmp, "scan", rules, data)
+
+            self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "del-snap",
+                "-d", "删除测试",
+                "-b", "cli-batch-del",
+            )
+
+            r_del = self._run_in(tmp, "snapshot", "delete", "del-snap")
+            self.assertEqual(r_del.returncode, 0, f"delete: {r_del.stderr}")
+            self.assertIn("已删除快照", r_del.stdout)
+            self.assertIn("del-snap", r_del.stdout)
+
+            r_show = self._run_in(tmp, "snapshot", "show", "del-snap")
+            self.assertEqual(r_show.returncode, 1)
+            self.assertIn("不存在", r_show.stderr)
+
+    def test_cli_batch_not_found_exit_1(self):
+        """CLI: 来源批次不存在返回 1"""
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "test",
+                "-b", "no-such-batch"
+            )
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("不存在", r.stderr)
+
+    def test_cli_snapshot_not_found_exit_1(self):
+        """CLI: 快照不存在返回 1"""
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run_in(tmp, "snapshot", "show", "no-snap")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("不存在", r.stderr)
+
+    def test_cli_import_bad_json_exit_2(self):
+        """CLI: 导入坏 JSON 返回 2"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_path = os.path.join(tmp, "bad.json")
+            with open(bad_path, "w", encoding="utf-8") as f:
+                f.write("this is not json")
+
+            r = self._run_in(tmp, "snapshot", "import", bad_path)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("格式错误", r.stderr)
+
+    def test_cli_create_duplicate_name_exit_2(self):
+        """CLI: 创建同名快照返回 2"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = self._create_rules_file(tmp, "cli-batch-dup")
+            data = self._create_data_dir(tmp)
+
+            self._run_in(tmp, "scan", rules, data)
+
+            self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "dup-snap",
+                "-b", "cli-batch-dup"
+            )
+
+            r = self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "dup-snap",
+                "-b", "cli-batch-dup"
+            )
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("名称冲突", r.stderr)
+
+    def test_cli_persistence_across_reload(self):
+        """CLI: 跨重启读取（重新调用 list 和 show）"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = self._create_rules_file(tmp, "cli-batch-persist")
+            data = self._create_data_dir(tmp)
+
+            self._run_in(tmp, "scan", rules, data)
+
+            r_create1 = self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "persist-snap",
+                "-d", "持久化测试",
+                "-b", "cli-batch-persist"
+            )
+            self.assertEqual(r_create1.returncode, 0)
+
+            r_list1 = self._run_in(tmp, "snapshot", "list")
+            self.assertEqual(r_list1.returncode, 0)
+            self.assertIn("persist-snap", r_list1.stdout)
+
+            r_show1 = self._run_in(tmp, "snapshot", "show", "persist-snap")
+            self.assertEqual(r_show1.returncode, 0)
+
+            r_list2 = self._run_in(tmp, "snapshot", "list")
+            self.assertEqual(r_list2.returncode, 0)
+            self.assertIn("persist-snap", r_list2.stdout)
+
+            r_show2 = self._run_in(tmp, "snapshot", "show", "persist-snap")
+            self.assertEqual(r_show2.returncode, 0)
+            self.assertEqual(r_show1.stdout, r_show2.stdout)
+
+    def test_cli_does_not_pollute_other_data(self):
+        """CLI: 快照操作不污染原批次、撤销栈、规则包索引、视图预设"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = self._create_rules_file(tmp, "cli-batch-clean")
+            data = self._create_data_dir(tmp)
+
+            self._run_in(tmp, "scan", rules, data)
+            self._run_in(
+                tmp, "mark", "cli-batch-clean", "passed",
+                "--ids", "1", "-r", "tester", "-n", "test note"
+            )
+
+            state_file = os.path.join(
+                tmp, ".delivery_check", "cli-batch-clean.state.json"
+            )
+            with open(state_file, "rb") as f:
+                before_hash = hashlib.sha256(f.read()).hexdigest()
+
+            self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "clean-snap",
+                "-d", "不污染测试",
+                "-b", "cli-batch-clean"
+            )
+
+            with open(state_file, "rb") as f:
+                after_hash = hashlib.sha256(f.read()).hexdigest()
+
+            self.assertEqual(before_hash, after_hash,
+                             "快照操作修改了原批次状态文件！")
+
+            export_path = os.path.join(tmp, "clean.snapshot.json")
+            self._run_in(tmp, "snapshot", "export", "clean-snap", export_path)
+
+            with open(state_file, "rb") as f:
+                after_export_hash = hashlib.sha256(f.read()).hexdigest()
+
+            self.assertEqual(before_hash, after_export_hash,
+                             "快照导出修改了原批次状态文件！")
+
+            self._run_in(tmp, "snapshot", "delete", "clean-snap")
+
+            with open(state_file, "rb") as f:
+                after_delete_hash = hashlib.sha256(f.read()).hexdigest()
+
+            self.assertEqual(before_hash, after_delete_hash,
+                             "快照删除修改了原批次状态文件！")
+
+    def test_cli_snapshot_in_path_with_spaces(self):
+        """CLI: 工作目录和路径含空格/中文"""
+        with tempfile.TemporaryDirectory() as tmp_root:
+            work_dir = os.path.join(tmp_root, "我的 快照 目录")
+            os.makedirs(work_dir)
+
+            rules = self._create_rules_file(work_dir, "路径 测试 批次")
+            data_dir = os.path.join(work_dir, "数据 目录")
+            os.makedirs(data_dir)
+            os.makedirs(os.path.join(data_dir, "docs"))
+            with open(os.path.join(data_dir, "README.md"), "w") as f:
+                f.write("# test")
+            with open(os.path.join(data_dir, "docs", "design.md"), "w") as f:
+                f.write("# design")
+
+            r_scan = self._run_in(work_dir, "scan", rules, data_dir)
+            self.assertEqual(r_scan.returncode, 0,
+                             f"scan path: {r_scan.stderr}")
+
+            r_create = self._run_in(
+                work_dir, "snapshot", "create",
+                "-n", "空格 快照",
+                "-d", "含空格路径测试",
+                "-b", "路径 测试 批次"
+            )
+            self.assertEqual(r_create.returncode, 0,
+                             f"create path: {r_create.stderr}\nstdout: {r_create.stdout}")
+            self.assertIn("空格 快照", r_create.stdout)
+
+            r_show = self._run_in(work_dir, "snapshot", "show", "空格 快照")
+            self.assertEqual(r_show.returncode, 0,
+                             f"show path: {r_show.stderr}")
+
+            export_path = os.path.join(work_dir, "导出 快照.snapshot.json")
+            r_export = self._run_in(
+                work_dir, "snapshot", "export", "空格 快照", export_path
+            )
+            self.assertEqual(r_export.returncode, 0,
+                             f"export path: {r_export.stderr}")
+            self.assertTrue(os.path.exists(export_path))
+
+            r_import = self._run_in(
+                work_dir, "snapshot", "import", export_path,
+                "--rename-name", "导入 空格 快照"
+            )
+            self.assertEqual(r_import.returncode, 0,
+                             f"import path: {r_import.stderr}\nstdout: {r_import.stdout}")
+            self.assertIn("导入 空格 快照", r_import.stdout)
+
+    def test_cli_list_empty(self):
+        """CLI: 无快照时 list 输出正确"""
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run_in(tmp, "snapshot", "list")
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("暂无快照", r.stdout)
+
+    def test_cli_export_default_path(self):
+        """CLI: 导出使用默认路径"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = self._create_rules_file(tmp, "cli-batch-def")
+            data = self._create_data_dir(tmp)
+
+            self._run_in(tmp, "scan", rules, data)
+            self._run_in(
+                tmp, "snapshot", "create",
+                "-n", "def-snap", "-b", "cli-batch-def"
+            )
+
+            r = self._run_in(tmp, "snapshot", "export", "def-snap")
+            self.assertEqual(r.returncode, 0, f"export default: {r.stderr}")
+
+            default_path = os.path.join(tmp, "def-snap.snapshot.json")
+            self.assertTrue(os.path.exists(default_path))
 
 
 if __name__ == "__main__":

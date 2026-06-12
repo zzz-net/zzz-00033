@@ -792,6 +792,316 @@ dc compare-run "回归测试对比"
 
 ---
 
+## 📸 交付快照归档
+
+把某次扫描后的批次、规则摘要和当前复核状态打包成**可留档的快照**，用于审计回溯、交付证据留存、跨环境迁移。所有快照保存在 `.delivery_check/snapshots/` 目录，**跨重启依然可用**，且**绝不会污染原批次、撤销栈、规则包索引或视图预设**。
+
+### 快照内容
+
+每次创建快照时会完整记录：
+
+| 内容 | 说明 |
+|------|------|
+| 批次问题清单 | 所有问题的完整状态（含复核人、备注、状态、时间戳） |
+| 规则摘要 | 必需文件/命名规则/忽略规则数量、规则哈希、规则源路径 |
+| 复核状态分布 | pending / passed / ignored / todo 各状态数量统计 |
+| 元数据 | 快照名称、说明、来源批次、创建/更新时间 |
+
+### 快速上手
+
+#### 1. 创建快照
+
+```bash
+# 从批次「交付样例-2026-Q2」创建快照，命名为「Q2-final-review」
+dc.bat snapshot create ^
+  -n "Q2-final-review" ^
+  -d "Q2 交付最终复核完成，共 10 个问题，8 项通过 2 项豁免" ^
+  -b "交付样例-2026-Q2"
+```
+
+**输出：**
+```
+✅ 已创建快照: Q2-final-review
+  来源批次: 交付样例-2026-Q2
+  问题数量: 10
+  状态分布: {'pending': 0, 'passed': 8, 'ignored': 2, 'todo': 0}
+  规则摘要: 3 条必需文件规则, 2 条命名规则, 3 条忽略规则
+  创建时间: 2026-06-12T15:30:00
+```
+
+#### 2. 列出所有快照
+
+```bash
+dc.bat snapshot list
+```
+
+**输出：**
+```
+共 2 个快照：
+
+1. Q2-final-review
+   说明: Q2 交付最终复核完成
+   来源批次: 交付样例-2026-Q2
+   创建时间: 2026-06-12T15:30:00
+   问题数量: 10
+   状态分布: 待复核 0, 已通过 8, 已忽略 2, 待补充 0
+   规则摘要: 3 必需 2 命名
+
+2. Q2-mid-review
+   说明: Q2 中期复核快照
+   来源批次: 交付样例-2026-Q2
+   创建时间: 2026-06-10T10:15:00
+   问题数量: 10
+   状态分布: 待复核 5, 已通过 3, 已忽略 0, 待补充 2
+   规则摘要: 3 必需 2 命名
+```
+
+#### 3. 查看快照详情
+
+```bash
+# 基本信息
+dc.bat snapshot show "Q2-final-review"
+
+# 包含问题详情
+dc.bat snapshot show "Q2-final-review" --verbose
+```
+
+**输出（基本信息）：**
+```
+快照: Q2-final-review
+  说明: Q2 交付最终复核完成
+  来源批次: 交付样例-2026-Q2
+  来源数据目录: D:\work\delivery\sample_data
+  来源规则文件: D:\work\delivery\rules.yaml
+  创建时间: 2026-06-12T15:30:00
+  更新时间: 2026-06-12T15:30:00
+
+规则摘要:
+  3 条必需文件规则, 2 条命名规则, 3 条忽略规则
+  规则批次名: 交付样例-2026-Q2
+  规则版本哈希: a1b2c3d4...
+
+问题统计 (10 个问题):
+  待复核: 0
+  已通过: 8
+  已忽略: 2
+  待补充: 0
+```
+
+#### 4. 导出快照（JSON 格式）
+
+```bash
+# 导出到指定路径
+dc.bat snapshot export "Q2-final-review" .\archives\q2_final.snapshot.json
+
+# 使用默认路径（<name>.snapshot.json）
+dc.bat snapshot export "Q2-final-review"
+```
+
+**输出：**
+```
+✅ 已导出快照到: D:\work\delivery\archives\q2_final.snapshot.json
+```
+
+#### 5. 导入快照
+
+```bash
+# 默认策略：同名拒绝
+dc.bat snapshot import .\archives\q2_final.snapshot.json
+
+# 同名时覆盖
+dc.bat snapshot import .\archives\q2_final.snapshot.json --conflict overwrite
+
+# 同名时自动改名（如 Q2-final-review_1）
+dc.bat snapshot import .\archives\q2_final.snapshot.json --conflict rename
+
+# 导入时重命名
+dc.bat snapshot import .\archives\q2_final.snapshot.json ^
+  --rename-name "Q2-final-review-archive"
+```
+
+**场景 A：同名拒绝**
+```
+❌ 快照名称冲突: 快照「Q2-final-review」已存在。
+使用 --conflict overwrite 覆盖，或 --conflict rename 自动改名。
+```
+退出码：2
+
+**场景 B：自动改名成功**
+```
+✅ 已导入快照: Q2-final-review_1
+  冲突策略: 自动改名
+  来源批次: 交付样例-2026-Q2
+  问题数量: 10
+  导入时间: 2026-06-13T09:00:00
+```
+
+#### 6. 删除快照
+
+```bash
+dc.bat snapshot delete "Q2-mid-review"
+```
+
+**输出：**
+```
+✅ 已删除快照: Q2-mid-review
+```
+
+### 快照文件结构
+
+```
+.delivery_check/
+  snapshots/
+    index.json              # 快照索引（元数据列表）
+    snapshots.log           # 操作日志（所有快照操作的审计记录）
+    Q2-final-review.snapshot.json    # 快照数据本体
+    Q2-mid-review.snapshot.json
+```
+
+**索引文件：** 记录所有快照的元数据（名称、说明、来源批次、问题数量、状态分布、创建时间等），重启后仍可列出。
+
+**操作日志：** `snapshots.log` 记录所有快照操作（创建、删除、导入、导出）和错误，用于审计追踪。
+
+**原子写入保证：** 所有写入操作先写 `.tmp` 再 `shutil.move` 替换，中途崩溃不会损坏文件。
+
+### 导出文件格式
+
+```json
+{
+  "format_version": 1,
+  "type": "delivery-checker-snapshot",
+  "snapshot": {
+    "name": "Q2-final-review",
+    "description": "Q2 交付最终复核完成",
+    "source_batch_name": "交付样例-2026-Q2",
+    "source_rules": {
+      "batch_name": "交付样例-2026-Q2",
+      "root_alias": "交付资料包",
+      "required_files_count": 3,
+      "naming_rules_count": 2,
+      "ignore_patterns_count": 3,
+      "expiry_date": "2026-06-30",
+      "source_path": "D:\\work\\delivery\\rules.yaml",
+      "source_hash": "a1b2c3d4..."
+    },
+    "issues": [
+      {
+        "id": "missing::path::README.md",
+        "type": "missing",
+        "file_path": "README.md",
+        "description": "必交付文档不存在",
+        "status": "passed",
+        "reviewer": "张三",
+        "review_note": "已确认",
+        "reviewed_at": "2026-06-12T14:20:00"
+      }
+    ],
+    "status_distribution": {
+      "pending": 0,
+      "passed": 8,
+      "ignored": 2,
+      "todo": 0
+    },
+    "issue_count": 10,
+    "data_dir": "D:\\work\\delivery\\sample_data",
+    "rules_path": "D:\\work\\delivery\\rules.yaml",
+    "created_at": "2026-06-12T15:30:00",
+    "updated_at": "2026-06-12T15:30:00"
+  }
+}
+```
+
+### 错误码与边界处理
+
+| 退出码 | 场景 | 示例 |
+|-------|------|------|
+| **0** | 成功 | 创建/列出/查看/导出/导入/删除成功 |
+| **1** | 快照不存在 / 来源批次不存在 / 导入文件不存在 | `snapshot show no-snapshot` → 快照不存在 |
+| **2** | 快照文件损坏 / JSON 格式错误 / 名称冲突（refuse 策略） | 导入坏 JSON 文件 |
+| **3** | 快照名称冲突（创建时） | 创建同名快照 |
+| **4** | 权限不足（读/写/删除失败） | 目标目录无写权限 |
+| **5** | 其他创建/导入失败 | 来源批次读取失败 |
+
+#### 典型场景示例
+
+```bash
+# 场景 1：来源批次不存在
+dc.bat snapshot create -n test -b no-such-batch
+# ❌ 来源批次不存在: 来源批次不存在: no-such-batch
+# 退出码: 1
+
+# 场景 2：导入坏 JSON 文件
+echo "this is not json" > bad.snapshot.json
+dc.bat snapshot import bad.snapshot.json
+# ❌ 导入文件格式错误: JSON 解析失败 bad.snapshot.json: Expecting property name...
+# 退出码: 2
+
+# 场景 3：快照文件损坏（手动破坏）
+echo "not valid" > .delivery_check/snapshots/corrupt.snapshot.json
+# 手动在 index.json 中添加对应条目后
+dc.bat snapshot show corrupt
+# ❌ 快照文件损坏: 快照缺少必填字段: name, description, ...
+# 退出码: 2
+
+# 场景 4：同名创建冲突
+dc.bat snapshot create -n "Q2-final-review" -b "交付样例-2026-Q2"
+# ❌ 快照名称冲突: 快照「Q2-final-review」已存在。
+# 使用 --force 覆盖，或选一个新名称。
+# 退出码: 2
+```
+
+> **重要保证**：快照操作是**完全隔离**的，**绝不会修改原批次、撤销栈、规则包索引或视图预设**。即使快照操作失败，原有数据完整无损。
+
+### 常用工作流示例
+
+#### 工作流 1：交付前留档
+
+```bash
+# 1. 扫描并复核
+dc.bat scan rules.yaml ./delivery_pkg --name release-v2
+# ... 交互式复核 ...
+
+# 2. 复核完成后创建快照留档
+dc.bat snapshot create ^
+  -n "release-v2-final" ^
+  -d "v2 版本交付前最终快照，所有问题已处理" ^
+  -b "release-v2"
+
+# 3. 导出交付给客户
+dc.bat snapshot export "release-v2-final" ./deliverables/release_v2_snapshot.json
+```
+
+#### 工作流 2：跨环境迁移快照
+
+```bash
+# 开发机：导出快照
+dc.bat snapshot export "release-v2-final" ./transfer/release_v2.snapshot.json
+
+# 服务器：导入快照
+scp ./transfer/release_v2.snapshot.json server:/work/archives/
+ssh server "cd /work && dc.bat snapshot import ./archives/release_v2.snapshot.json"
+
+# 服务器：验证导入
+dc.bat snapshot list
+dc.bat snapshot show "release-v2-final"
+```
+
+#### 工作流 3：审计回溯（跨重启可用）
+
+```bash
+# 周一：创建快照
+dc.bat snapshot create -n "week1-audit" -d "第 1 周审计快照" -b "audit-week1"
+
+# 周五：重启后仍可读取
+dc.bat snapshot list
+# （week1-audit 仍在列表中）
+
+dc.bat snapshot show "week1-audit" --verbose
+# 可以查看当时每个问题的状态、复核人、备注
+```
+
+---
+
 ## ⚠️ 边界场景提示
 
 所有边界场景都**不会清除既有批次状态**。
@@ -990,6 +1300,12 @@ metadata:
 | `dc.bat compare-list` | 列出所有对比配置 |
 | `dc.bat compare-show <名称>` | 查看对比配置详情 |
 | `dc.bat compare-delete <名称>` | 删除对比配置 |
+| `dc.bat snapshot create -n <名称> -d <说明> -b <批次>` | 从批次创建快照 |
+| `dc.bat snapshot list` | 列出所有快照 |
+| `dc.bat snapshot show <名称> [--verbose]` | 查看快照详情（可选显示问题详情） |
+| `dc.bat snapshot export <名称> [输出路径]` | 导出快照为 JSON 文件 |
+| `dc.bat snapshot import <文件> [--conflict overwrite\|rename\|refuse] [--rename-name <新名称>]` | 导入快照，支持三种冲突处理策略 |
+| `dc.bat snapshot delete <名称>` | 删除快照 |
 | `dc.bat --no-color ...` | 禁用彩色输出（日志/管道场景） |
 
 **退出码说明**：
@@ -997,10 +1313,11 @@ metadata:
 | 退出码 | 含义 |
 |--------|------|
 | 0 | 成功 |
-| 1 | 目录不存在 / 文件不存在 / 预设不存在 / 批次不存在 / 运行时错误 |
-| 2 | 规则配置格式/语义错误 / 规则包或预设或对比配置格式错误（坏 JSON / 缺字段） |
-| 3 | 重复扫描 / 规则/目录不一致 / 规则包或预设或对比配置同名冲突 / 导出文件拒绝覆盖 |
-| 4 | 状态文件读写失败 / 权限不足 / 导出目录无写权限 |
+| 1 | 目录不存在 / 文件不存在 / 预设不存在 / 批次不存在 / 快照不存在 / 运行时错误 |
+| 2 | 规则配置格式/语义错误 / 规则包或预设或对比配置或快照格式错误（坏 JSON / 缺字段） / 快照导入名称冲突（refuse 策略） |
+| 3 | 重复扫描 / 规则/目录不一致 / 规则包或预设或对比配置或快照同名冲突 / 导出文件拒绝覆盖 |
+| 4 | 状态文件读写失败 / 权限不足 / 导出目录无写权限 / 快照权限不足 |
+| 5 | 快照创建/导入其他失败 |
 | 130 | Ctrl+C 中断 |
 
 ---

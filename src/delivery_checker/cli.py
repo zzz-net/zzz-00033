@@ -48,6 +48,20 @@ from .view_preset import (
     list_view_presets,
     save_view_preset,
 )
+from .snapshot import (
+    Snapshot,
+    SnapshotConflictError,
+    SnapshotFormatError,
+    SnapshotNotFoundError,
+    SnapshotPermissionError,
+    SnapshotBatchNotFoundError,
+    create_snapshot,
+    delete_snapshot,
+    export_snapshot,
+    get_snapshot,
+    import_snapshot,
+    list_snapshots,
+)
 from .compare import (
     CompareConfig,
     CompareConfigConflictError,
@@ -1323,6 +1337,204 @@ def cmd_compare_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_snapshot_create(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        snapshot = create_snapshot(
+            base_dir,
+            args.name,
+            args.description or "",
+            args.batch,
+        )
+    except SnapshotBatchNotFoundError as e:
+        print(_color(f"❌ 来源批次不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except SnapshotConflictError as e:
+        print(_color(f"❌ 快照名称冲突: {e}", C_RED, color), file=sys.stderr)
+        print(_color("使用 --force 覆盖，或选一个新名称。", C_YELLOW, color), file=sys.stderr)
+        return 2
+    except SnapshotFormatError as e:
+        print(_color(f"❌ 格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 3
+    except SnapshotPermissionError as e:
+        print(_color(f"❌ 权限不足: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    except Exception as e:
+        print(_color(f"❌ 创建失败: {e}", C_RED, color), file=sys.stderr)
+        return 5
+    print(_color(f"✅ 已创建快照: {snapshot.name}", C_GREEN, color))
+    print(f"  来源批次: {snapshot.source_batch_name}")
+    print(f"  问题数量: {snapshot.issue_count}")
+    print(f"  状态分布: {snapshot.status_distribution}")
+    print(f"  规则摘要: {snapshot.rules_summary()}")
+    print(f"  创建时间: {snapshot.created_at}")
+    return 0
+
+
+def cmd_snapshot_list(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        snapshots = list_snapshots(base_dir)
+    except SnapshotFormatError as e:
+        print(_color(f"❌ 索引文件损坏: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except SnapshotPermissionError as e:
+        print(_color(f"❌ 权限不足: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    if not snapshots:
+        print(_color("（暂无快照）", C_YELLOW, color))
+        return 0
+    print(_color(f"共 {len(snapshots)} 个快照：", C_BOLD, color))
+    for i, s in enumerate(snapshots, 1):
+        status_parts = [
+            f"{REVIEW_STATUS_LABELS.get(k, k)} {v}"
+            for k, v in s.get("status_distribution", {}).items()
+        ]
+        status_str = ", ".join(status_parts) if status_parts else "(无问题)"
+        rules_str = (
+            f"{s.get('source_rules_required_count', 0)} 必需 "
+            f"{s.get('source_rules_naming_count', 0)} 命名"
+        )
+        print()
+        print(f"{i}. {_color(s['name'], C_BOLD, color)}")
+        if s.get("description"):
+            print(f"   说明: {s['description']}")
+        print(f"   来源批次: {s.get('source_batch_name', '')}")
+        print(f"   创建时间: {s.get('created_at', '')}")
+        print(f"   问题数量: {s.get('issue_count', 0)}")
+        print(f"   状态分布: {status_str}")
+        print(f"   规则摘要: {rules_str}")
+    return 0
+
+
+def cmd_snapshot_show(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        snapshot = get_snapshot(base_dir, args.name)
+    except SnapshotNotFoundError as e:
+        print(_color(f"❌ 快照不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except SnapshotFormatError as e:
+        print(_color(f"❌ 快照文件损坏: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except SnapshotPermissionError as e:
+        print(_color(f"❌ 权限不足: {e}", C_RED, color), file=sys.stderr)
+        return 3
+    print(_color(f"快照: {snapshot.name}", C_BOLD, color))
+    print(f"  说明: {snapshot.description or '(无)'}")
+    print(f"  来源批次: {snapshot.source_batch_name}")
+    print(f"  来源数据目录: {snapshot.data_dir}")
+    print(f"  来源规则文件: {snapshot.rules_path}")
+    print(f"  创建时间: {snapshot.created_at}")
+    print(f"  更新时间: {snapshot.updated_at}")
+    print()
+    print(_color("规则摘要:", C_BOLD, color))
+    print(f"  {snapshot.rules_summary()}")
+    print(f"  规则批次名: {snapshot.source_rules.get('batch_name', '')}")
+    print(f"  规则版本哈希: {snapshot.source_rules.get('source_hash', '')}")
+    print()
+    print(_color(f"问题统计 ({snapshot.issue_count} 个问题):", C_BOLD, color))
+    for status, count in snapshot.status_distribution.items():
+        label = REVIEW_STATUS_LABELS.get(status, status)
+        print(f"  {label}: {count}")
+    if snapshot.issues and getattr(args, "verbose", False):
+        print()
+        print(_color("问题详情:", C_BOLD, color))
+        for issue in snapshot.issues:
+            status_label = REVIEW_STATUS_LABELS.get(
+                issue.get("status", ""),
+                issue.get("status", "unknown")
+            )
+            type_label = ISSUE_TYPE_LABELS.get(
+                issue.get("type", ""),
+                issue.get("type", "unknown")
+            )
+            print(f"  - [{type_label}] {issue.get('file_path', '')}: {issue.get('description', '')}")
+            print(f"    状态: {status_label}")
+            if issue.get("reviewer"):
+                print(f"    复核人: {issue.get('reviewer', '')}")
+            if issue.get("review_note"):
+                print(f"    备注: {issue.get('review_note', '')}")
+    return 0
+
+
+def cmd_snapshot_export(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    if args.output:
+        output_path = args.output
+    else:
+        output_path = os.path.join(base_dir, f"{args.name}.snapshot.json")
+    try:
+        output = export_snapshot(base_dir, args.name, output_path)
+    except SnapshotNotFoundError as e:
+        print(_color(f"❌ 快照不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except SnapshotPermissionError as e:
+        print(_color(f"❌ 权限不足: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except Exception as e:
+        print(_color(f"❌ 导出失败: {e}", C_RED, color), file=sys.stderr)
+        return 3
+    print(_color(f"✅ 已导出快照到: {output}", C_GREEN, color))
+    return 0
+
+
+def cmd_snapshot_import(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    strategy_map = {"overwrite": "overwrite", "rename": "rename", "refuse": "refuse"}
+    strategy = strategy_map.get(args.conflict, "refuse")
+    try:
+        snapshot = import_snapshot(
+            base_dir,
+            args.input,
+            conflict_strategy=strategy,
+            rename_name=args.rename_name,
+        )
+    except SnapshotFormatError as e:
+        print(_color(f"❌ 导入文件格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except SnapshotConflictError as e:
+        print(_color(f"❌ 快照名称冲突: {e}", C_RED, color), file=sys.stderr)
+        print(_color("使用 --conflict overwrite 覆盖，或 --conflict rename 自动改名。", C_YELLOW, color), file=sys.stderr)
+        return 2
+    except SnapshotPermissionError as e:
+        print(_color(f"❌ 权限不足: {e}", C_RED, color), file=sys.stderr)
+        return 3
+    except SnapshotNotFoundError as e:
+        print(_color(f"❌ 导入文件不存在: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    except Exception as e:
+        print(_color(f"❌ 导入失败: {e}", C_RED, color), file=sys.stderr)
+        return 5
+    strategy_label = {"overwrite": "覆盖", "rename": "自动改名", "refuse": "拒绝"}.get(strategy, strategy)
+    print(_color(f"✅ 已导入快照: {snapshot.name}", C_GREEN, color))
+    print(f"  冲突策略: {strategy_label}")
+    print(f"  来源批次: {snapshot.source_batch_name}")
+    print(f"  问题数量: {snapshot.issue_count}")
+    print(f"  导入时间: {snapshot.updated_at}")
+    return 0
+
+
+def cmd_snapshot_delete(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        delete_snapshot(base_dir, args.name)
+    except SnapshotNotFoundError as e:
+        print(_color(f"❌ 快照不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except SnapshotPermissionError as e:
+        print(_color(f"❌ 权限不足: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    print(_color(f"✅ 已删除快照: {args.name}", C_GREEN, color))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="delivery-checker",
@@ -1510,6 +1722,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_compare_delete = sub.add_parser("compare-delete", help="删除指定对比配置")
     p_compare_delete.add_argument("name", help="配置名称")
     p_compare_delete.set_defaults(func=cmd_compare_delete)
+
+    p_snapshot = sub.add_parser("snapshot", help="快照归档子命令（create/list/show/export/import/delete）")
+    p_snapshot_sub = p_snapshot.add_subparsers(dest="snapshot_command", required=True)
+
+    p_snap_create = p_snapshot_sub.add_parser("create", help="从批次创建快照")
+    p_snap_create.add_argument("--name", "-n", required=True, help="快照名称")
+    p_snap_create.add_argument("--description", "-d", default="", help="快照说明")
+    p_snap_create.add_argument("--batch", "-b", required=True, help="来源批次名称")
+    p_snap_create.set_defaults(func=cmd_snapshot_create)
+
+    p_snap_list = p_snapshot_sub.add_parser("list", help="列出所有快照")
+    p_snap_list.set_defaults(func=cmd_snapshot_list)
+
+    p_snap_show = p_snapshot_sub.add_parser("show", help="查看快照详情")
+    p_snap_show.add_argument("name", help="快照名称")
+    p_snap_show.add_argument("--verbose", "-v", action="store_true", help="显示问题详情")
+    p_snap_show.set_defaults(func=cmd_snapshot_show)
+
+    p_snap_export = p_snapshot_sub.add_parser("export", help="导出快照为 JSON 文件")
+    p_snap_export.add_argument("name", help="快照名称")
+    p_snap_export.add_argument("output", nargs="?", help="导出文件路径（默认: <name>.snapshot.json）")
+    p_snap_export.set_defaults(func=cmd_snapshot_export)
+
+    p_snap_import = p_snapshot_sub.add_parser("import", help="从 JSON 文件导入快照")
+    p_snap_import.add_argument("input", help="快照导出文件路径 (.snapshot.json)")
+    p_snap_import.add_argument("--conflict", "-c", choices=["overwrite", "rename", "refuse"],
+                               default="refuse",
+                               help="同名冲突处理策略（默认 refuse 拒绝）")
+    p_snap_import.add_argument("--rename-name", "-N", help="重命名导入的快照名称")
+    p_snap_import.set_defaults(func=cmd_snapshot_import)
+
+    p_snap_delete = p_snapshot_sub.add_parser("delete", help="删除快照")
+    p_snap_delete.add_argument("name", help="快照名称")
+    p_snap_delete.set_defaults(func=cmd_snapshot_delete)
 
     return parser
 
