@@ -1,0 +1,3 @@
+batch_name: "codex-a03-bad"
+root_alias: "bad"
+required_files: "should-be-array"

@@ -1,5 +1,5 @@
 {
-  "batch_name": "交付样例-JSON版",
+  "batch_name": "codex-a03-json",
   "root_alias": "交付资料包",
   "expiry_date": "2026-01-01",
   "ignore_patterns": [
@@ -74,3 +74,4 @@
     "owner": "交付组"
   }
 }
+

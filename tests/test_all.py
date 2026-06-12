@@ -526,5 +526,208 @@ class TestUndo(unittest.TestCase):
             self.assertEqual(len(state.undo_stack), 0)
 
 
+class TestJsonYamlEquivalence(unittest.TestCase):
+    """JSON 与 YAML 样例规则扫描同一份 sample_data 应得到一致的问题数量与类型分布。"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+    DATA_DIR = os.path.join(ROOT, "examples", "sample_data")
+
+    def test_both_yield_10_issues(self):
+        rules_yaml = parse_rules_file(
+            os.path.join(self.ROOT, "examples", "rules.yaml")
+        )
+        rules_json = parse_rules_file(
+            os.path.join(self.ROOT, "examples", "rules.json")
+        )
+        issues_yaml = scan_directory(rules_yaml, self.DATA_DIR)
+        issues_json = scan_directory(rules_json, self.DATA_DIR)
+
+        self.assertEqual(len(issues_yaml), 10)
+        self.assertEqual(len(issues_json), 10)
+
+        # 按类型计数对比
+        def _count(issues):
+            cnt = {}
+            for i in issues:
+                cnt[i.type.value] = cnt.get(i.type.value, 0) + 1
+            return cnt
+
+        yaml_counts = _count(issues_yaml)
+        json_counts = _count(issues_json)
+
+        self.assertEqual(yaml_counts, json_counts,
+                         "JSON 与 YAML 规则扫出的问题类型分布不一致")
+        self.assertEqual(yaml_counts.get("missing", 0), 2)
+        self.assertEqual(yaml_counts.get("naming", 0), 2)
+        self.assertEqual(yaml_counts.get("expired", 0), 1)
+        self.assertEqual(yaml_counts.get("duplicate", 0), 2)
+        self.assertEqual(yaml_counts.get("untracked", 0), 3)
+
+
+class TestCliExitCodes(unittest.TestCase):
+    """通过 subprocess 调用 python -m delivery_checker，验证退出码符合 README 描述。"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+    DATA_DIR = os.path.join(ROOT, "examples", "sample_data")
+
+    def _run(self, *args):
+        import subprocess
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.path.join(self.ROOT, "src")
+        env["PYTHONIOENCODING"] = "utf-8"
+        result = subprocess.run(
+            [sys.executable, "-m", "delivery_checker", *args],
+            env=env,
+            capture_output=True,
+            text=True,
+            cwd=self.ROOT,
+        )
+        return result
+
+    def test_clean_scan_exit_0(self):
+        """在独立状态目录下首次 scan 应返回 0。"""
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_in(tmp, "scan",
+                                  os.path.join(self.ROOT, "examples", "rules.yaml"),
+                                  self.DATA_DIR)
+            self.assertEqual(result.returncode, 0,
+                             f"stdout={result.stdout}\nstderr={result.stderr}")
+
+    def _run_in(self, work_dir, *args):
+        import subprocess
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.path.join(self.ROOT, "src")
+        env["PYTHONIOENCODING"] = "utf-8"
+        result = subprocess.run(
+            [sys.executable, "-m", "delivery_checker", *args],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=work_dir,
+        )
+        return result
+
+    def test_bad_yaml_exit_2(self):
+        """坏 YAML 配置应返回 2。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, "bad.yaml")
+            with open(bad, "w", encoding="utf-8") as f:
+                f.write(":::: broken yaml [\n")
+            result = self._run_in(tmp, "scan", bad, self.DATA_DIR)
+            self.assertEqual(result.returncode, 2,
+                             f"stderr={result.stderr}")
+
+    def test_missing_dir_exit_1(self):
+        """目录不存在（且为新批次）应返回 1。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_path = os.path.join(tmp, "r.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("batch_name: 'test-exit-new'\nroot_alias: 't'\nrequired_files:\n  - 'README.md'\n")
+            result = self._run_in(tmp, "scan", rules_path,
+                                  os.path.join(tmp, "__definitely_not_there__"))
+            self.assertEqual(result.returncode, 1,
+                             f"stderr={result.stderr}")
+
+    def test_duplicate_scan_exit_3(self):
+        """重复扫描（同名批次已存在，--no-merge）应返回 3。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_path = os.path.join(tmp, "r.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("batch_name: 'dup-test'\nroot_alias: 't'\nrequired_files:\n  - 'README.md'\n")
+            data_dir = os.path.join(tmp, "data")
+            os.makedirs(data_dir)
+            with open(os.path.join(data_dir, "README.md"), "w") as f:
+                f.write("hi")
+
+            # 第一次 scan 成功
+            r1 = self._run_in(tmp, "scan", rules_path, data_dir)
+            self.assertEqual(r1.returncode, 0, f"first scan: {r1.stderr}")
+
+            # 第二次 --no-merge 应拒绝并返回 3
+            r2 = self._run_in(tmp, "scan", rules_path, data_dir,
+                              "--no-merge")
+            self.assertEqual(r2.returncode, 3,
+                             f"duplicate scan: {r2.stderr}")
+
+    def test_batch_not_found_exit_1(self):
+        """review 不存在的批次应返回 1。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_in(tmp, "review", "__no_such_batch__")
+            self.assertEqual(result.returncode, 1,
+                             f"stderr={result.stderr}")
+
+
+class TestStatePersistencePreserved(unittest.TestCase):
+    """已有状态文件、list/mark/export/undo 行为不受本次修改影响。"""
+
+    def test_full_workflow_preserves_state(self):
+        """完整走一遍 scan → mark → undo → list → export，状态一致。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = CheckRules(batch_name="wf-test", root_alias="wf")
+            rules.source_path = os.path.join(tmp, "r.yaml")
+            rules.required_files = [
+                RequiredFile(pattern="a.txt"),
+                RequiredFile(pattern="b.txt"),
+                RequiredFile(pattern="c.txt"),
+            ]
+
+            data_dir = os.path.join(tmp, "data")
+            os.makedirs(data_dir)
+            # a.txt 存在，b/c 缺失 → 2 missing
+            with open(os.path.join(data_dir, "a.txt"), "w") as f:
+                f.write("a")
+
+            # 1) scan
+            from delivery_checker.state import create_or_resume_batch
+            state, action = create_or_resume_batch(
+                base_dir=tmp, rules=rules, data_dir=data_dir,
+                force_rescan=False, merge=True,
+            )
+            self.assertEqual(action, "已创建新批次")
+            issues = scan_directory(rules, data_dir)
+            state.set_issues(issues)
+            state.save(tmp)
+            self.assertEqual(len(issues), 2)
+
+            # 2) mark 一个为 passed
+            iid = state.get_sorted_issues()[0].id
+            state.mark_issue(iid, ReviewStatus.PASSED, "alice", note="ok")
+            state.save(tmp)
+
+            # 3) mark 另一个为 ignored
+            iid2 = [i for i in state.get_sorted_issues()
+                    if i.status == ReviewStatus.PENDING][0].id
+            state.mark_issue(iid2, ReviewStatus.IGNORED, "bob", note="ok2")
+            state.save(tmp)
+            self.assertEqual(len(state.undo_stack), 2)
+
+            # 4) undo 一步
+            state.undo_last()
+            state.save(tmp)
+            self.assertEqual(len(state.undo_stack), 1)
+
+            # 5) list_batches 能看到正确计数
+            batches = list_batches(tmp)
+            self.assertEqual(len(batches), 1)
+            self.assertEqual(batches[0]["issue_count"], 2)
+            self.assertEqual(batches[0]["pending_count"], 1)
+            self.assertEqual(batches[0]["batch_name"], "wf-test")
+
+            # 6) 导出报告（HTML 和 CSV）都不报错
+            from delivery_checker.report import export_html, export_csv
+            html_path = os.path.join(tmp, "out.html")
+            csv_path = os.path.join(tmp, "out.csv")
+            export_html(state, html_path)
+            export_csv(state, csv_path)
+            self.assertTrue(os.path.getsize(html_path) > 0)
+            self.assertTrue(os.path.getsize(csv_path) > 0)
+
+
 if __name__ == "__main__":
     unittest.main()

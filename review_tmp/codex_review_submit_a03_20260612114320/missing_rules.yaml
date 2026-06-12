@@ -1,0 +1,4 @@
+batch_name: "codex-review-missing-a03"
+root_alias: "missing"
+required_files:
+  - "README.md"

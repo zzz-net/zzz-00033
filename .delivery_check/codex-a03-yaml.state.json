@@ -1,8 +1,8 @@
 {
-  "batch_name": "交付样例-2026-Q2",
+  "batch_name": "codex-a03-yaml",
   "data_dir": "D:\\workSpace\\AI__SPACE\\zzz-00033\\examples\\sample_data",
   "rules": {
-    "batch_name": "交付样例-2026-Q2",
+    "batch_name": "codex-a03-yaml",
     "root_alias": "交付资料包",
     "required_files": [
       {
@@ -107,10 +107,10 @@
       "version": "1.0.0",
       "owner": "交付组"
     },
-    "source_path": "D:\\workSpace\\AI__SPACE\\zzz-00033\\examples\\rules.yaml",
-    "source_hash": "93547640a8d3d3cd"
+    "source_path": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\codex_review_a03_run\\rules.yaml",
+    "source_hash": "2a783c196a8575d7"
   },
-  "rules_hash": "93547640a8d3d3cd",
+  "rules_hash": "2a783c196a8575d7",
   "issues": {
     "af627d3f24b6": {
       "id": "af627d3f24b6",
@@ -118,13 +118,13 @@
       "path": "config/config.yaml",
       "message": "缺少必需文件或目录匹配项: config/config.yaml（部署配置模板）",
       "detail": "部署配置模板",
-      "status": "ignored",
-      "reviewer": "李四",
-      "note": "客户豁免此项",
-      "reviewed_at": "2026-06-12T08:56:48",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
       "group_key": null,
       "type_label": "必需文件缺失",
-      "status_label": "忽略"
+      "status_label": "待复核"
     },
     "f978968913c5": {
       "id": "f978968913c5",
@@ -132,13 +132,13 @@
       "path": "CHANGELOG.md",
       "message": "缺少必需文件或目录匹配项: CHANGELOG.md（版本变更记录）",
       "detail": "版本变更记录",
-      "status": "passed",
-      "reviewer": "张三",
-      "note": "已单独邮件确认",
-      "reviewed_at": "2026-06-12T08:56:48",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
       "group_key": null,
       "type_label": "必需文件缺失",
-      "status_label": "通过"
+      "status_label": "待复核"
     },
     "a2696823ecd6": {
       "id": "a2696823ecd6",
@@ -253,24 +253,7 @@
       "status_label": "待复核"
     }
   },
-  "undo_stack": [
-    {
-      "issue_id": "f978968913c5",
-      "prev_status": "pending",
-      "prev_reviewer": null,
-      "prev_note": "",
-      "prev_reviewed_at": null,
-      "timestamp": "2026-06-12T08:56:48"
-    },
-    {
-      "issue_id": "af627d3f24b6",
-      "prev_status": "pending",
-      "prev_reviewer": null,
-      "prev_note": "",
-      "prev_reviewed_at": null,
-      "timestamp": "2026-06-12T08:56:48"
-    }
-  ],
-  "created_at": "2026-06-12T08:42:34",
-  "updated_at": "2026-06-12T10:32:58"
+  "undo_stack": [],
+  "created_at": "2026-06-12T11:34:30",
+  "updated_at": "2026-06-12T11:34:30"
 }

@@ -5,4 +5,6 @@ set "HERE=%~dp0"
 set "PYTHONPATH=%HERE%src;%PYTHONPATH%"
 set "PYTHONIOENCODING=utf-8"
 python -m delivery_checker %*
+set EXITCODE=%ERRORLEVEL%
 endlocal
+exit %EXITCODE%

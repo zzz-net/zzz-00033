@@ -1,0 +1,11 @@
+﻿编号,问题类型,路径,问题描述,详细说明,复核状态,处理人,备注,复核时间
+1,必需文件缺失,CHANGELOG.md,缺少必需文件或目录匹配项: CHANGELOG.md（版本变更记录）,版本变更记录,通过,ReviewerA03,checked,2026-06-12T11:43:21
+2,必需文件缺失,config/config.yaml,缺少必需文件或目录匹配项: config/config.yaml（部署配置模板）,部署配置模板,待复核,,,
+3,命名不符合规范,build/report_final.pdf,文件命名不符合规则「report-date」,要求: 文件名必须形如 test_report_20260612.pdf,待复核,,,
+4,命名不符合规范,docs/requirements.docx,文件命名不符合规则「signature-doc」,要求: 文件名必须形如 requirements_v2026.02_签字版.docx,待复核,,,
+5,文件已过期,docs/requirements.docx,文件修改时间早于要求的 2026-06-01,实际修改时间: 2026-03-15 10:00:00,待复核,,,
+6,重复文件,deliverables/slot_b.txt,超出必需槽位「deliverables/slot_*.txt」的数量限制（最多 1 个）,"已匹配 2 个文件: deliverables/slot_a.txt, deliverables/slot_b.txt",待复核,,,
+7,重复文件,src/backup/main_copy.py,与 src/main.py 内容完全相同,"文件大小: 110 bytes, 副本数: 2",待复核,,,
+8,未纳入规则的文件,deliverables/extra.bin,文件不在规则清单中,未被任何 required_files 规则匹配,待复核,,,
+9,未纳入规则的文件,extra_readme.txt,文件不在规则清单中,未被任何 required_files 规则匹配,待复核,,,
+10,未纳入规则的文件,temp_scratch.tmp,文件不在规则清单中,未被任何 required_files 规则匹配,待复核,,,
