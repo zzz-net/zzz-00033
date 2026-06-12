@@ -33,8 +33,22 @@ def _stat_counts(issues: List[Issue]) -> Dict[str, Any]:
     }
 
 
-def export_csv(state: BatchState, output_path: str) -> str:
-    issues = state.get_sorted_issues()
+def export_csv(
+    state: BatchState,
+    output_path: str,
+    issue_types: Optional[List[str]] = None,
+    review_statuses: Optional[List[str]] = None,
+    path_keyword: str = "",
+    sort_by: str = "type",
+    sort_order: str = "asc",
+) -> str:
+    issues = state.get_sorted_issues(
+        issue_types=issue_types,
+        review_statuses=review_statuses,
+        path_keyword=path_keyword,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
     with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -114,8 +128,22 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 
-def export_html(state: BatchState, output_path: str) -> str:
-    issues = state.get_sorted_issues()
+def export_html(
+    state: BatchState,
+    output_path: str,
+    issue_types: Optional[List[str]] = None,
+    review_statuses: Optional[List[str]] = None,
+    path_keyword: str = "",
+    sort_by: str = "type",
+    sort_order: str = "asc",
+) -> str:
+    issues = state.get_sorted_issues(
+        issue_types=issue_types,
+        review_statuses=review_statuses,
+        path_keyword=path_keyword,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
     stats = _stat_counts(issues)
 
     stat_cards = []
@@ -203,7 +231,16 @@ def export_html(state: BatchState, output_path: str) -> str:
     return os.path.abspath(output_path)
 
 
-def export_report(state: BatchState, output_path: str, fmt: str = "auto") -> str:
+def export_report(
+    state: BatchState,
+    output_path: str,
+    fmt: str = "auto",
+    issue_types: Optional[List[str]] = None,
+    review_statuses: Optional[List[str]] = None,
+    path_keyword: str = "",
+    sort_by: str = "type",
+    sort_order: str = "asc",
+) -> str:
     fmt = fmt.lower()
     if fmt == "auto":
         ext = os.path.splitext(output_path)[1].lower()
@@ -214,10 +251,24 @@ def export_report(state: BatchState, output_path: str, fmt: str = "auto") -> str
         else:
             fmt = "html"
     if fmt == "csv":
-        return export_csv(state, output_path)
+        return export_csv(
+            state, output_path,
+            issue_types=issue_types,
+            review_statuses=review_statuses,
+            path_keyword=path_keyword,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
     elif fmt == "html":
         if not output_path.lower().endswith((".html", ".htm")):
             output_path += ".html"
-        return export_html(state, output_path)
+        return export_html(
+            state, output_path,
+            issue_types=issue_types,
+            review_statuses=review_statuses,
+            path_keyword=path_keyword,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
     else:
         raise ValueError(f"不支持的导出格式: {fmt}")

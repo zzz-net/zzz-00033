@@ -1,0 +1,15 @@
+{
+  "name": "导入的预设",
+  "description": "缺失和重复",
+  "issue_types": [
+    "missing",
+    "duplicate"
+  ],
+  "review_statuses": [],
+  "path_keyword": "",
+  "sort_by": "type",
+  "sort_order": "desc",
+  "default_reviewer": "",
+  "created_at": "2026-06-12T15:16:32",
+  "updated_at": "2026-06-12T15:16:32"
+}

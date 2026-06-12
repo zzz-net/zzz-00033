@@ -35,6 +35,19 @@ from .rule_pkg import (
     list_rule_packages,
     save_rule_package,
 )
+from .view_preset import (
+    ViewPreset,
+    ViewPresetConflictError,
+    ViewPresetFormatError,
+    ViewPresetNotFoundError,
+    ViewPresetPermissionError,
+    delete_view_preset,
+    export_view_preset,
+    get_view_preset,
+    import_view_preset,
+    list_view_presets,
+    save_view_preset,
+)
 
 
 C_RESET = "\033[0m"
@@ -164,6 +177,107 @@ def _get_default_reviewer() -> str:
     return env_user or user or "unknown"
 
 
+def _parse_csv_list(raw: Optional[str]) -> List[str]:
+    if not raw:
+        return []
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def _apply_preset_and_cli_filters(
+    args: argparse.Namespace,
+    base_dir: str,
+) -> tuple[dict, ViewPreset | None, str, str]:
+    """合并预设参数和 CLI 参数。
+
+    返回 (filter_kwargs, preset_obj, info_msg)
+    filter_kwargs 用于 get_sorted_issues / export_report 调用
+    规则：CLI 显式参数优先于预设
+    """
+    color = _use_color()
+    info_parts: List[str] = []
+
+    preset: ViewPreset | None = None
+    preset_name = getattr(args, "preset", None)
+    if preset_name:
+        try:
+            preset = get_view_preset(base_dir, preset_name)
+            info_parts.append(f"套用预设「{_color(preset_name, C_CYAN, color)}」")
+        except ViewPresetNotFoundError as e:
+            print(_color(f"❌ 预设不存在: {e}", C_RED, color), file=sys.stderr)
+            sys.exit(1)
+        except ViewPresetFormatError as e:
+            print(_color(f"❌ 预设格式错误: {e}", C_RED, color), file=sys.stderr)
+            sys.exit(2)
+        except ViewPresetPermissionError as e:
+            print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+            sys.exit(4)
+
+    cli_issue_types = _parse_csv_list(getattr(args, "type", None))
+    cli_review_statuses = _parse_csv_list(getattr(args, "filter", None))
+    cli_path_keyword = getattr(args, "path", "") or ""
+    cli_sort_by = getattr(args, "sort_by", "") or ""
+    cli_sort_order = getattr(args, "sort_order", "") or ""
+    cli_reviewer = getattr(args, "reviewer", None) or ""
+
+    issue_types: List[str] = []
+    if cli_issue_types:
+        issue_types = cli_issue_types
+        info_parts.append(f"类型筛选(CLI): {','.join(issue_types)}")
+    elif preset and preset.issue_types:
+        issue_types = preset.issue_types
+        info_parts.append(f"类型筛选(预设): {','.join(issue_types)}")
+
+    review_statuses: List[str] = []
+    if cli_review_statuses:
+        review_statuses = cli_review_statuses
+        info_parts.append(f"状态筛选(CLI): {','.join(review_statuses)}")
+    elif preset and preset.review_statuses:
+        review_statuses = preset.review_statuses
+        info_parts.append(f"状态筛选(预设): {','.join(review_statuses)}")
+
+    path_keyword = ""
+    if cli_path_keyword:
+        path_keyword = cli_path_keyword
+        info_parts.append(f"路径关键字(CLI): {path_keyword}")
+    elif preset and preset.path_keyword:
+        path_keyword = preset.path_keyword
+        info_parts.append(f"路径关键字(预设): {path_keyword}")
+
+    sort_by = "type"
+    if cli_sort_by:
+        sort_by = cli_sort_by
+        info_parts.append(f"排序字段(CLI): {sort_by}")
+    elif preset and preset.sort_by:
+        sort_by = preset.sort_by
+        info_parts.append(f"排序字段(预设): {sort_by}")
+
+    sort_order = "asc"
+    if cli_sort_order:
+        sort_order = cli_sort_order
+        info_parts.append(f"排序方向(CLI): {sort_order}")
+    elif preset and preset.sort_order:
+        sort_order = preset.sort_order
+        info_parts.append(f"排序方向(预设): {sort_order}")
+
+    reviewer = ""
+    if cli_reviewer:
+        reviewer = cli_reviewer
+    elif preset and preset.default_reviewer:
+        reviewer = preset.default_reviewer
+        info_parts.append(f"默认处理人(预设): {reviewer}")
+
+    filter_kwargs = {
+        "issue_types": issue_types,
+        "review_statuses": review_statuses,
+        "path_keyword": path_keyword,
+        "sort_by": sort_by,
+        "sort_order": sort_order,
+    }
+
+    info_msg = " | ".join(info_parts) if info_parts else ""
+    return filter_kwargs, preset, info_msg, reviewer
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     color = _use_color()
     rules_path = os.path.abspath(args.rules)
@@ -238,33 +352,42 @@ def cmd_review(args: argparse.Namespace) -> int:
         return 1
     state = BatchState.load(base_dir, batch_name)
 
-    reviewer = args.reviewer or _get_default_reviewer()
+    filter_kwargs, preset, info_msg, preset_reviewer = _apply_preset_and_cli_filters(args, base_dir)
+
+    reviewer = getattr(args, "reviewer", None) or preset_reviewer or _get_default_reviewer()
     print(f"当前处理人: {_color(reviewer, C_CYAN, color)}")
+    if info_msg:
+        print(_color(f"🔍 {info_msg}", C_BLUE, color))
+
+    show_all = getattr(args, "all", False)
 
     while True:
-        issues = state.get_sorted_issues()
-        pending = [i for i in issues if i.status == ReviewStatus.PENDING]
+        all_issues = state.get_sorted_issues(**filter_kwargs)
+        pending_all = state.get_sorted_issues(
+            issue_types=filter_kwargs.get("issue_types"),
+            review_statuses=["pending"],
+            path_keyword=filter_kwargs.get("path_keyword", ""),
+            sort_by=filter_kwargs.get("sort_by", "type"),
+            sort_order=filter_kwargs.get("sort_order", "asc"),
+        )
+        pending = [i for i in all_issues if i.status == ReviewStatus.PENDING]
 
         print()
         print(_color(f"📋 批次「{state.batch_name}」问题概览", C_BOLD, color))
-        print(f"   总数: {len(issues)}  待复核: {len(pending)}")
+        print(f"   总数(筛选后): {len(all_issues)}  待复核(筛选后): {len(pending)}")
         print()
 
-        filter_set = None
-        if args.filter:
-            filter_set = set(args.filter.split(","))
-
-        if args.all:
-            display_issues = issues
+        if show_all:
+            display_issues = all_issues
         else:
-            display_issues = pending or issues
-        _print_issue_table(display_issues, filter_set)
+            display_issues = pending or all_issues
+        _print_issue_table(display_issues)
         print()
         print(_color("可用命令:", C_BOLD, color))
         print("  <编号>            标记指定问题（输入序号，如: 3）")
         print("  a / all           标记全部待复核")
         print("  u / undo          撤销上一步复核")
-        print("  l / list          显示全部问题（含已处理）")
+        print("  l / list          切换显示全部问题")
         print("  e / export <文件> 导出报告（如 report.html）")
         print("  q / quit          退出（自动保存）")
         print()
@@ -283,7 +406,9 @@ def cmd_review(args: argparse.Namespace) -> int:
         if cmd in ("q", "quit", "exit"):
             break
         elif cmd in ("l", "list"):
-            args.all = True
+            show_all = not show_all
+            mode = "全部" if show_all else "仅待复核"
+            print(_color(f"已切换显示模式: {mode}", C_BLUE, color))
             continue
         elif cmd in ("u", "undo"):
             try:
@@ -299,7 +424,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         elif cmd in ("e", "export"):
             output = arg or f"{state.batch_name}_report.html"
             try:
-                saved = export_report(state, output)
+                saved = export_report(state, output, **filter_kwargs)
                 print(_color(f"📄 报告已导出: {saved}", C_GREEN, color))
             except Exception as e:
                 print(_color(f"❌ 导出失败: {e}", C_RED, color), file=sys.stderr)
@@ -310,9 +435,7 @@ def cmd_review(args: argparse.Namespace) -> int:
 
         if cmd.isdigit():
             idx = int(cmd) - 1
-            display_list = pending if not args.all else issues
-            if filter_set:
-                display_list = [i for i in display_list if i.status.value in filter_set]
+            display_list = display_issues
             if 0 <= idx < len(display_list):
                 target = display_list[idx]
                 do_mark_one(state, base_dir, target, reviewer, color)
@@ -493,8 +616,13 @@ def cmd_export(args: argparse.Namespace) -> int:
     state = BatchState.load(base_dir, batch_name)
     fmt = args.format or "auto"
     output = args.output or f"{batch_name}_report.html"
+
+    filter_kwargs, preset, info_msg, _ = _apply_preset_and_cli_filters(args, base_dir)
+    if info_msg:
+        print(_color(f"🔍 {info_msg}", C_BLUE, color))
+
     try:
-        saved = export_report(state, output, fmt)
+        saved = export_report(state, output, fmt, **filter_kwargs)
         print(_color(f"📄 报告已导出: {saved}", C_GREEN, color))
     except Exception as e:
         print(_color(f"❌ 导出失败: {e}", C_RED, color), file=sys.stderr)
@@ -641,6 +769,198 @@ def cmd_rule_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_preset_save(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    issue_types = _parse_csv_list(getattr(args, "type", None))
+    review_statuses = _parse_csv_list(getattr(args, "filter", None))
+    try:
+        preset = save_view_preset(
+            base_dir=base_dir,
+            name=args.name,
+            description=getattr(args, "description", "") or "",
+            issue_types=issue_types,
+            review_statuses=review_statuses,
+            path_keyword=getattr(args, "path", "") or "",
+            sort_by=getattr(args, "sort_by", "type") or "type",
+            sort_order=getattr(args, "sort_order", "asc") or "asc",
+            default_reviewer=getattr(args, "reviewer", "") or "",
+            force=getattr(args, "force", False),
+        )
+    except ViewPresetConflictError as e:
+        print(_color(f"⚠️  {e}", C_YELLOW, color), file=sys.stderr)
+        print(_color("   加 -f 覆盖，或换个名称保存。", C_GRAY, color), file=sys.stderr)
+        return 3
+    except ViewPresetFormatError as e:
+        print(_color(f"❌ 预设格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except ViewPresetPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    print(_color(f"✅ 视图预设已保存", C_GREEN, color))
+    print(f"   名称: {_color(preset.name, C_BOLD, color)}")
+    if preset.description:
+        print(f"   说明: {preset.description}")
+    if preset.issue_types:
+        print(f"   问题类型: {', '.join(preset.issue_types)}")
+    if preset.review_statuses:
+        print(f"   复核状态: {', '.join(preset.review_statuses)}")
+    if preset.path_keyword:
+        print(f"   路径关键字: {preset.path_keyword}")
+    print(f"   排序方式: {preset.sort_by} / {preset.sort_order}")
+    if preset.default_reviewer:
+        print(f"   默认处理人: {preset.default_reviewer}")
+    print(f"   创建时间: {preset.created_at}")
+    return 0
+
+
+def cmd_preset_list(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        presets = list_view_presets(base_dir)
+    except ViewPresetFormatError as e:
+        print(_color(f"❌ 预设索引格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except ViewPresetPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    if not presets:
+        print(_color("（暂无视图预设）", C_GRAY, color))
+        print(_color("使用 preset-save 子命令创建第一个预设", C_GRAY, color))
+        return 0
+
+    print(_color(f"{'#':>3}  {'名称':<18}  {'类型筛选':<18}  {'状态筛选':<18}  说明", C_BOLD, color))
+    print(_color("-" * 90, C_GRAY, color))
+    for idx, p in enumerate(presets, 1):
+        name = _color(p["name"][:18], C_CYAN, color)
+        types = ",".join(p.get("issue_types", []))
+        statuses = ",".join(p.get("review_statuses", []))
+        if not types:
+            types = "(全部)"
+        if not statuses:
+            statuses = "(全部)"
+        desc = p.get("description", "")
+        print(f"{idx:>3}  {name:<18}  {types[:18]:<18}  {statuses[:18]:<18}  {desc}")
+        extra_parts = []
+        if p.get("path_keyword"):
+            extra_parts.append(f"路径关键字: {p['path_keyword']}")
+        extra_parts.append(f"排序: {p.get('sort_by', 'type')}/{p.get('sort_order', 'asc')}")
+        if p.get("default_reviewer"):
+            extra_parts.append(f"处理人: {p['default_reviewer']}")
+        if p.get("updated_at"):
+            extra_parts.append(f"更新: {p['updated_at']}")
+        print(f"     {_color(' | '.join(extra_parts), C_GRAY, color)}")
+    return 0
+
+
+def cmd_preset_show(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        preset = get_view_preset(base_dir, args.name)
+    except ViewPresetNotFoundError as e:
+        print(_color(f"❌ 预设不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except ViewPresetFormatError as e:
+        print(_color(f"❌ 预设格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except ViewPresetPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    print(_color(f"📋 视图预设「{preset.name}」详情", C_BOLD, color))
+    if preset.description:
+        print(f"  说明: {preset.description}")
+    print(f"  问题类型筛选: {', '.join(preset.issue_types) if preset.issue_types else '(全部)'}")
+    print(f"  复核状态筛选: {', '.join(preset.review_statuses) if preset.review_statuses else '(全部)'}")
+    print(f"  路径关键字: {preset.path_keyword if preset.path_keyword else '(无)'}")
+    print(f"  排序字段: {preset.sort_by}")
+    print(f"  排序方向: {preset.sort_order}")
+    print(f"  默认处理人: {preset.default_reviewer if preset.default_reviewer else '(无)'}")
+    print(f"  创建时间: {preset.created_at}")
+    print(f"  更新时间: {preset.updated_at}")
+    return 0
+
+
+def cmd_preset_delete(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        delete_view_preset(base_dir, args.name)
+    except ViewPresetNotFoundError as e:
+        print(_color(f"❌ 预设不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except ViewPresetPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    print(_color(f"✅ 已删除预设: {args.name}", C_GREEN, color))
+    return 0
+
+
+def cmd_preset_export(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    output = args.output or f"{args.name}.preset.json"
+    try:
+        saved = export_view_preset(
+            base_dir=base_dir,
+            name=args.name,
+            output_path=output,
+        )
+    except ViewPresetNotFoundError as e:
+        print(_color(f"❌ 预设不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except ViewPresetFormatError as e:
+        print(_color(f"❌ 预设格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except ViewPresetPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    print(_color(f"📄 预设已导出: {saved}", C_GREEN, color))
+    return 0
+
+
+def cmd_preset_import(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    input_path = os.path.abspath(args.input)
+    try:
+        preset = import_view_preset(
+            base_dir=base_dir,
+            input_path=input_path,
+            force=args.force,
+            rename_name=args.rename_name,
+        )
+    except ViewPresetNotFoundError as e:
+        print(_color(f"❌ 文件不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except ViewPresetFormatError as e:
+        print(_color(f"❌ 预设格式错误: {e}", C_RED, color), file=sys.stderr)
+        print(_color("   （原有预设未被修改）", C_GRAY, color), file=sys.stderr)
+        return 2
+    except ViewPresetConflictError as e:
+        print(_color(f"⚠️  {e}", C_YELLOW, color), file=sys.stderr)
+        print(_color("   加 -f 强制覆盖，或用 -N 改名导入。", C_GRAY, color), file=sys.stderr)
+        print(_color("   （原有预设未被修改）", C_GRAY, color), file=sys.stderr)
+        return 3
+    except ViewPresetPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    print(_color(f"✅ 视图预设已导入", C_GREEN, color))
+    print(f"   名称: {_color(preset.name, C_BOLD, color)}")
+    if preset.description:
+        print(f"   说明: {preset.description}")
+    if preset.issue_types:
+        print(f"   问题类型: {', '.join(preset.issue_types)}")
+    if preset.review_statuses:
+        print(f"   复核状态: {', '.join(preset.review_statuses)}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="delivery-checker",
@@ -662,8 +982,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_review.add_argument("batch_name", help="批次名称")
     p_review.add_argument("--reviewer", "-r", help="处理人姓名（默认当前系统用户）")
     p_review.add_argument("--filter", "-f",
-                          help="按状态过滤显示: pending,passed,ignored,todo 逗号分隔")
-    p_review.add_argument("--all", "-a", action="store_true", help="默认显示全部问题")
+                          help="按复核状态过滤: pending,passed,ignored,todo 逗号分隔")
+    p_review.add_argument("--type", "-t", dest="type",
+                          help="按问题类型过滤: missing,naming,expired,duplicate,untracked 逗号分隔")
+    p_review.add_argument("--path", "-p", help="按路径/描述关键字过滤（大小写不敏感子串匹配）")
+    p_review.add_argument("--sort-by", choices=["type", "path", "status", "reviewed_at", "id"],
+                          default="", help="排序字段（默认: type）")
+    p_review.add_argument("--sort-order", choices=["asc", "desc"], default="",
+                          help="排序方向（默认: asc）")
+    p_review.add_argument("--preset", help="套用命名视图预设")
+    p_review.add_argument("--all", "-a", action="store_true", help="默认显示全部问题（含已处理）")
     p_review.set_defaults(func=cmd_review)
 
     p_mark = sub.add_parser("mark", help="非交互式批量标记问题状态")
@@ -685,6 +1013,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("output", nargs="?", help="输出文件路径（默认 <批次>_report.html）")
     p_export.add_argument("--format", "-f", choices=["html", "csv", "auto"], default="auto",
                           help="导出格式（默认根据扩展名自动判断）")
+    p_export.add_argument("--filter", "-F",
+                          help="按复核状态过滤: pending,passed,ignored,todo 逗号分隔")
+    p_export.add_argument("--type", "-t", dest="type",
+                          help="按问题类型过滤: missing,naming,expired,duplicate,untracked 逗号分隔")
+    p_export.add_argument("--path", "-p", help="按路径/描述关键字过滤（大小写不敏感子串匹配）")
+    p_export.add_argument("--sort-by", choices=["type", "path", "status", "reviewed_at", "id"],
+                          default="", help="排序字段（默认: type）")
+    p_export.add_argument("--sort-order", choices=["asc", "desc"], default="",
+                          help="排序方向（默认: asc）")
+    p_export.add_argument("--preset", help="套用命名视图预设")
     p_export.set_defaults(func=cmd_export)
 
     p_list = sub.add_parser("list", help="列出所有历史批次")
@@ -715,6 +1053,46 @@ def build_parser() -> argparse.ArgumentParser:
     p_rule_import.add_argument("--rename-name", "-N", help="重命名导入的规则包名称")
     p_rule_import.add_argument("--rename-version", "-V", help="重命名导入的规则包版本")
     p_rule_import.set_defaults(func=cmd_rule_import)
+
+    p_preset_save = sub.add_parser("preset-save", help="保存筛选条件为命名视图预设")
+    p_preset_save.add_argument("--name", "-n", required=True, help="预设名称")
+    p_preset_save.add_argument("--description", "-d", default="", help="预设说明")
+    p_preset_save.add_argument("--type", "-t", dest="type",
+                               help="问题类型: missing,naming,expired,duplicate,untracked 逗号分隔")
+    p_preset_save.add_argument("--filter", "-F",
+                               help="复核状态: pending,passed,ignored,todo 逗号分隔")
+    p_preset_save.add_argument("--path", "-p", help="路径/描述关键字")
+    p_preset_save.add_argument("--sort-by", choices=["type", "path", "status", "reviewed_at", "id"],
+                               default="type", help="排序字段（默认: type）")
+    p_preset_save.add_argument("--sort-order", choices=["asc", "desc"], default="asc",
+                               help="排序方向（默认: asc）")
+    p_preset_save.add_argument("--reviewer", "-r", help="默认处理人")
+    p_preset_save.add_argument("--force", action="store_true",
+                               help="强制覆盖已存在的同名预设")
+    p_preset_save.set_defaults(func=cmd_preset_save)
+
+    p_preset_list = sub.add_parser("preset-list", help="列出所有已保存的视图预设")
+    p_preset_list.set_defaults(func=cmd_preset_list)
+
+    p_preset_show = sub.add_parser("preset-show", help="查看指定视图预设的详细内容")
+    p_preset_show.add_argument("name", help="预设名称")
+    p_preset_show.set_defaults(func=cmd_preset_show)
+
+    p_preset_delete = sub.add_parser("preset-delete", help="删除指定视图预设")
+    p_preset_delete.add_argument("name", help="预设名称")
+    p_preset_delete.set_defaults(func=cmd_preset_delete)
+
+    p_preset_export = sub.add_parser("preset-export", help="导出视图预设为可分享的 JSON 文件")
+    p_preset_export.add_argument("name", help="预设名称")
+    p_preset_export.add_argument("output", nargs="?", help="导出文件路径（默认: <name>.preset.json）")
+    p_preset_export.set_defaults(func=cmd_preset_export)
+
+    p_preset_import = sub.add_parser("preset-import", help="从导出文件导入视图预设")
+    p_preset_import.add_argument("input", help="预设导出文件路径 (.preset.json)")
+    p_preset_import.add_argument("--force", "-f", action="store_true",
+                                 help="强制覆盖已存在的同名预设")
+    p_preset_import.add_argument("--rename-name", "-N", help="重命名导入的预设名称")
+    p_preset_import.set_defaults(func=cmd_preset_import)
 
     return parser
 

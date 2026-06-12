@@ -1,0 +1,4 @@
+usage: delivery-checker [-h] [--no-color]
+                        {scan,review,mark,undo,export,list,rule-save,rule-list,rule-export,rule-import,preset-save,preset-list,preset-show,preset-delete,preset-export,preset-import}
+                        ...
+delivery-checker: error: unrecognized arguments: --preset 待办配置

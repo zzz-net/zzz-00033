@@ -1,0 +1,5 @@
+﻿编号,问题类型,路径,问题描述,详细说明,复核状态,处理人,备注,复核时间
+1,重复文件,src/backup/main_copy.py,与 src/main.py 内容完全相同,"文件大小: 110 bytes, 副本数: 2",通过,兼容测试,,2026-06-12T15:04:09
+2,重复文件,deliverables/slot_b.txt,超出必需槽位「deliverables/slot_*.txt」的数量限制（最多 1 个）,"已匹配 2 个文件: deliverables/slot_a.txt, deliverables/slot_b.txt",通过,兼容测试,,2026-06-12T15:04:09
+3,必需文件缺失,config/config.yaml,缺少必需文件或目录匹配项: config/config.yaml（部署配置模板）,部署配置模板,忽略,李四,客户豁免此项,2026-06-12T08:56:48
+4,必需文件缺失,CHANGELOG.md,缺少必需文件或目录匹配项: CHANGELOG.md（版本变更记录）,版本变更记录,通过,张三,已单独邮件确认,2026-06-12T08:56:48

@@ -1,0 +1,14 @@
+{
+  "name": "测试缺失文件",
+  "description": "只看缺失文件问题",
+  "issue_types": [
+    "missing"
+  ],
+  "review_statuses": [],
+  "path_keyword": "",
+  "sort_by": "path",
+  "sort_order": "asc",
+  "default_reviewer": "张三",
+  "created_at": "2026-06-12T15:01:24",
+  "updated_at": "2026-06-12T15:01:24"
+}

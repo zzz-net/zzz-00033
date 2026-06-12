@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "presets": [
+    {
+      "name": "测试缺失文件",
+      "description": "只看缺失文件问题",
+      "issue_types": [
+        "missing"
+      ],
+      "review_statuses": [],
+      "path_keyword": "",
+      "sort_by": "path",
+      "sort_order": "asc",
+      "default_reviewer": "张三",
+      "created_at": "2026-06-12T15:01:24",
+      "updated_at": "2026-06-12T15:01:24",
+      "file": "测试缺失文件.preset.json"
+    },
+    {
+      "name": "今日待办",
+      "description": "",
+      "issue_types": [],
+      "review_statuses": [
+        "pending",
+        "todo"
+      ],
+      "path_keyword": "",
+      "sort_by": "status",
+      "sort_order": "asc",
+      "default_reviewer": "",
+      "created_at": "2026-06-12T15:01:25",
+      "updated_at": "2026-06-12T15:01:25",
+      "file": "今日待办.preset.json"
+    },
+    {
+      "name": "缺失文件优先",
+      "description": "只看缺失文件按路径排序",
+      "issue_types": [
+        "missing"
+      ],
+      "review_statuses": [],
+      "path_keyword": "",
+      "sort_by": "path",
+      "sort_order": "asc",
+      "default_reviewer": "张工",
+      "created_at": "2026-06-12T15:13:47",
+      "updated_at": "2026-06-12T15:13:47",
+      "file": "缺失文件优先.preset.json"
+    },
+    {
+      "name": "所有缺失",
+      "description": "缺失和重复",
+      "issue_types": [
+        "missing",
+        "duplicate"
+      ],
+      "review_statuses": [],
+      "path_keyword": "",
+      "sort_by": "type",
+      "sort_order": "desc",
+      "default_reviewer": "",
+      "created_at": "2026-06-12T15:14:59",
+      "updated_at": "2026-06-12T15:18:00",
+      "file": "所有缺失.preset.json"
+    },
+    {
+      "name": "配置相关",
+      "description": "配置类文件",
+      "issue_types": [],
+      "review_statuses": [],
+      "path_keyword": "config",
+      "sort_by": "path",
+      "sort_order": "asc",
+      "default_reviewer": "",
+      "created_at": "2026-06-12T15:14:59",
+      "updated_at": "2026-06-12T15:14:59",
+      "file": "配置相关.preset.json"
+    },
+    {
+      "name": "导入的预设",
+      "description": "缺失和重复",
+      "issue_types": [
+        "missing",
+        "duplicate"
+      ],
+      "review_statuses": [],
+      "path_keyword": "",
+      "sort_by": "type",
+      "sort_order": "desc",
+      "default_reviewer": "",
+      "created_at": "2026-06-12T15:16:32",
+      "updated_at": "2026-06-12T15:16:32",
+      "file": "导入的预设.preset.json"
+    },
+    {
+      "name": "待办配置",
+      "description": "",
+      "issue_types": [
+        "missing"
+      ],
+      "review_statuses": [
+        "pending",
+        "todo"
+      ],
+      "path_keyword": "config",
+      "sort_by": "path",
+      "sort_order": "asc",
+      "default_reviewer": "reviewer",
+      "created_at": "2026-06-12T15:31:07",
+      "updated_at": "2026-06-12T15:31:07",
+      "file": "待办配置.preset.json"
+    }
+  ]
+}

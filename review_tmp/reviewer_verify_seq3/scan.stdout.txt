@@ -1,0 +1,17 @@
+
+============================================================
+  📦 本地资料包交付检查工具
+============================================================
+
+✅ 已创建新批次
+   批次名称: reviewer-preset-check
+   资料目录: D:\workSpace\AI__SPACE\zzz-00033\review_tmp\reviewer_verify_seq3\data
+   规则文件: D:\workSpace\AI__SPACE\zzz-00033\review_tmp\reviewer_verify_seq3\rules.yaml
+
+📊 扫描结果统计:
+   总计问题: 2   待复核: 2   通过: 0   忽略: 0   待补充: 0
+
+使用以下命令继续:
+   python -m delivery_checker review reviewer-preset-check   交互式复核
+   python -m delivery_checker mark reviewer-preset-check ...    批量标记
+   python -m delivery_checker export reviewer-preset-check   导出报告

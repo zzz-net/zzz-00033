@@ -53,6 +53,19 @@ from delivery_checker.rule_pkg import (
     list_rule_packages,
     save_rule_package,
 )
+from delivery_checker.view_preset import (
+    ViewPreset,
+    ViewPresetConflictError,
+    ViewPresetFormatError,
+    ViewPresetNotFoundError,
+    ViewPresetPermissionError,
+    delete_view_preset,
+    export_view_preset,
+    get_view_preset,
+    import_view_preset,
+    list_view_presets,
+    save_view_preset,
+)
 
 
 class TestGlobMatching(unittest.TestCase):
@@ -1740,6 +1753,812 @@ class TestRulePackageCliExitCodes(unittest.TestCase):
             # undo
             r_undo = self._run_in(tmp, "undo", "compat-test")
             self.assertEqual(r_undo.returncode, 0, f"undo: {r_undo.stderr}")
+
+
+class TestViewPresetCore(unittest.TestCase):
+    """视图预设核心功能测试"""
+
+    def test_save_and_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            preset = save_view_preset(
+                base_dir=tmp,
+                name="缺失文件优先",
+                description="只看必需文件缺失的问题",
+                issue_types=["missing"],
+                review_statuses=["pending", "todo"],
+                path_keyword="",
+                sort_by="path",
+                sort_order="asc",
+                default_reviewer="张工",
+            )
+            self.assertEqual(preset.name, "缺失文件优先")
+            self.assertEqual(preset.issue_types, ["missing"])
+            self.assertEqual(sorted(preset.review_statuses), ["pending", "todo"])
+            self.assertEqual(preset.sort_by, "path")
+            self.assertEqual(preset.default_reviewer, "张工")
+
+            presets = list_view_presets(tmp)
+            self.assertEqual(len(presets), 1)
+            self.assertEqual(presets[0]["name"], "缺失文件优先")
+            self.assertEqual(presets[0]["default_reviewer"], "张工")
+
+    def test_get_preset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_view_preset(
+                base_dir=tmp,
+                name="test-preset",
+                description="test",
+                issue_types=["naming", "expired"],
+                sort_by="status",
+                sort_order="desc",
+            )
+            preset = get_view_preset(tmp, "test-preset")
+            self.assertEqual(preset.name, "test-preset")
+            self.assertEqual(sorted(preset.issue_types), ["expired", "naming"])
+            self.assertEqual(preset.sort_by, "status")
+            self.assertEqual(preset.sort_order, "desc")
+
+    def test_delete_preset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_view_preset(base_dir=tmp, name="to-delete", description="d")
+            self.assertEqual(len(list_view_presets(tmp)), 1)
+            delete_view_preset(tmp, "to-delete")
+            self.assertEqual(len(list_view_presets(tmp)), 0)
+            with self.assertRaises(ViewPresetNotFoundError):
+                get_view_preset(tmp, "to-delete")
+
+    def test_duplicate_name_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_view_preset(base_dir=tmp, name="conflict", description="old")
+            with self.assertRaises(ViewPresetConflictError):
+                save_view_preset(base_dir=tmp, name="conflict", description="new")
+
+    def test_force_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_view_preset(
+                base_dir=tmp, name="overwrite-me",
+                description="old", issue_types=["missing"]
+            )
+            old_created = get_view_preset(tmp, "overwrite-me").created_at
+
+            save_view_preset(
+                base_dir=tmp, name="overwrite-me",
+                description="new", issue_types=["untracked"],
+                force=True
+            )
+            reloaded = get_view_preset(tmp, "overwrite-me")
+            self.assertEqual(reloaded.description, "new")
+            self.assertEqual(reloaded.issue_types, ["untracked"])
+            self.assertEqual(reloaded.created_at, old_created)
+
+    def test_validation_invalid_issue_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ViewPresetFormatError):
+                save_view_preset(
+                    base_dir=tmp, name="bad", issue_types=["INVALID_TYPE"]
+                )
+
+    def test_validation_invalid_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ViewPresetFormatError):
+                save_view_preset(
+                    base_dir=tmp, name="bad", review_statuses=["INVALID"]
+                )
+
+    def test_validation_invalid_sort_by(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ViewPresetFormatError):
+                save_view_preset(base_dir=tmp, name="bad", sort_by="whatever")
+
+    def test_validation_empty_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ViewPresetFormatError):
+                save_view_preset(base_dir=tmp, name="  ")
+
+    def test_from_dict_validation_missing_name(self):
+        with self.assertRaises(ViewPresetFormatError):
+            ViewPreset.from_dict({"description": "missing name"})
+
+    def test_from_dict_validation_invalid_elements(self):
+        with self.assertRaises(ViewPresetFormatError):
+            ViewPreset.from_dict({
+                "name": "test",
+                "issue_types": ["not_a_valid_type"],
+            })
+
+
+class TestViewPresetPersistence(unittest.TestCase):
+    """跨重启可见性测试"""
+
+    def test_persistence_across_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # 第一次"启动"：保存预设
+            save_view_preset(
+                base_dir=tmp,
+                name="跨重启预设",
+                description="验证是否持久化",
+                issue_types=["missing", "naming"],
+                review_statuses=["pending"],
+                path_keyword="config",
+                sort_by="path",
+                sort_order="asc",
+                default_reviewer="李工",
+            )
+            self.assertEqual(len(list_view_presets(tmp)), 1)
+
+            # 模拟"重启"：重新 list 和 get
+            presets = list_view_presets(tmp)
+            self.assertEqual(len(presets), 1)
+            self.assertEqual(presets[0]["name"], "跨重启预设")
+            self.assertEqual(presets[0]["path_keyword"], "config")
+
+            preset = get_view_preset(tmp, "跨重启预设")
+            self.assertEqual(preset.description, "验证是否持久化")
+            self.assertEqual(sorted(preset.issue_types), ["missing", "naming"])
+            self.assertEqual(preset.default_reviewer, "李工")
+            self.assertEqual(preset.sort_by, "path")
+
+    def test_multiple_presets_coexist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_view_preset(
+                base_dir=tmp, name="只看缺失",
+                issue_types=["missing"], sort_by="path"
+            )
+            save_view_preset(
+                base_dir=tmp, name="只看待办",
+                review_statuses=["todo"], default_reviewer="王工"
+            )
+            save_view_preset(
+                base_dir=tmp, name="全部按时间",
+                sort_by="reviewed_at", sort_order="desc"
+            )
+
+            presets = list_view_presets(tmp)
+            self.assertEqual(len(presets), 3)
+            names = sorted(p["name"] for p in presets)
+            expected_names = sorted(["全部按时间", "只看缺失", "只看待办"])
+            self.assertEqual(names, expected_names)
+
+
+class TestViewPresetImportExport(unittest.TestCase):
+    """导入导出往返测试"""
+
+    def test_export_import_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            # 源：保存并导出
+            save_view_preset(
+                base_dir=tmp_src,
+                name="导出测试预设",
+                description="从源目录导出",
+                issue_types=["duplicate", "untracked"],
+                review_statuses=["pending", "passed"],
+                path_keyword="backup",
+                sort_by="status",
+                sort_order="desc",
+                default_reviewer="赵工",
+            )
+
+            export_file = os.path.join(tmp_src, "my_preset.preset.json")
+            saved_path = export_view_preset(tmp_src, "导出测试预设", export_file)
+            self.assertTrue(os.path.exists(saved_path))
+
+            # 目标：导入
+            imported = import_view_preset(tmp_dst, export_file)
+            self.assertEqual(imported.name, "导出测试预设")
+            self.assertEqual(sorted(imported.issue_types), ["duplicate", "untracked"])
+            self.assertEqual(imported.default_reviewer, "赵工")
+            self.assertEqual(imported.sort_by, "status")
+            self.assertEqual(imported.sort_order, "desc")
+            self.assertEqual(imported.path_keyword, "backup")
+
+            # 验证目标目录 list 可见
+            presets = list_view_presets(tmp_dst)
+            self.assertEqual(len(presets), 1)
+            self.assertEqual(presets[0]["name"], "导出测试预设")
+
+    def test_import_with_rename(self):
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            save_view_preset(base_dir=tmp_src, name="original", description="原预设")
+            export_file = os.path.join(tmp_src, "export.preset.json")
+            export_view_preset(tmp_src, "original", export_file)
+
+            # 改名导入
+            imported = import_view_preset(
+                tmp_dst, export_file, rename_name="改名后的预设"
+            )
+            self.assertEqual(imported.name, "改名后的预设")
+
+            # 原名也可成功导入（不冲突）
+            imported2 = import_view_preset(tmp_dst, export_file)
+            self.assertEqual(imported2.name, "original")
+
+            self.assertEqual(len(list_view_presets(tmp_dst)), 2)
+
+    def test_import_does_not_affect_existing_presets(self):
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            # 目标先保存一个已有预设
+            save_view_preset(
+                base_dir=tmp_dst, name="existing",
+                description="已存在的预设",
+                issue_types=["missing"],
+                default_reviewer="老处理人",
+            )
+
+            # 源目录导出另一个预设
+            save_view_preset(
+                base_dir=tmp_src, name="new-preset",
+                description="新导入的预设",
+                issue_types=["naming"],
+                default_reviewer="新处理人",
+            )
+            export_file = os.path.join(tmp_src, "export.preset.json")
+            export_view_preset(tmp_src, "new-preset", export_file)
+
+            # 导入
+            import_view_preset(tmp_dst, export_file)
+
+            # 验证已有预设未受影响
+            existing = get_view_preset(tmp_dst, "existing")
+            self.assertEqual(existing.description, "已存在的预设")
+            self.assertEqual(existing.issue_types, ["missing"])
+            self.assertEqual(existing.default_reviewer, "老处理人")
+
+            # 新预设也存在
+            new_p = get_view_preset(tmp_dst, "new-preset")
+            self.assertEqual(new_p.issue_types, ["naming"])
+
+            self.assertEqual(len(list_view_presets(tmp_dst)), 2)
+
+    def test_export_file_format(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as tmp:
+            save_view_preset(
+                base_dir=tmp, name="fmt-test",
+                description="格式验证", issue_types=["missing"]
+            )
+            export_file = os.path.join(tmp, "export.json")
+            export_view_preset(tmp, "fmt-test", export_file)
+
+            with open(export_file, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+
+            self.assertEqual(data["format_version"], 1)
+            self.assertEqual(data["type"], "delivery-checker-view-preset")
+            self.assertIn("preset", data)
+            self.assertEqual(data["preset"]["name"], "fmt-test")
+            self.assertEqual(data["preset"]["description"], "格式验证")
+
+
+class TestViewPresetConflictSafety(unittest.TestCase):
+    """冲突处理和失败安全性测试"""
+
+    def _preset_dir_hash(self, base_dir: str) -> str:
+        import hashlib
+        from delivery_checker.view_preset import _get_view_presets_dir
+        pdir = _get_view_presets_dir(base_dir)
+        if not os.path.exists(pdir):
+            return "empty"
+        hasher = hashlib.sha256()
+        for root, _, files in os.walk(pdir):
+            for fn in sorted(files):
+                fp = os.path.join(root, fn)
+                hasher.update(fn.encode("utf-8"))
+                with open(fp, "rb") as f:
+                    hasher.update(f.read())
+        return hasher.hexdigest()
+
+    def test_import_conflict_no_force_no_side_effects(self):
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            # 源：导出一个预设
+            save_view_preset(
+                base_dir=tmp_src, name="conflict",
+                description="新版本", issue_types=["naming"]
+            )
+            export_file = os.path.join(tmp_src, "export.json")
+            export_view_preset(tmp_src, "conflict", export_file)
+
+            # 目标：先保存旧版本
+            save_view_preset(
+                base_dir=tmp_dst, name="conflict",
+                description="旧版本", issue_types=["missing"],
+                default_reviewer="旧人",
+            )
+            baseline_hash = self._preset_dir_hash(tmp_dst)
+
+            # 不 force 导入 → 冲突
+            with self.assertRaises(ViewPresetConflictError):
+                import_view_preset(tmp_dst, export_file, force=False)
+
+            # 验证状态未变
+            self.assertEqual(self._preset_dir_hash(tmp_dst), baseline_hash)
+            existing = get_view_preset(tmp_dst, "conflict")
+            self.assertEqual(existing.description, "旧版本")
+            self.assertEqual(existing.issue_types, ["missing"])
+
+    def test_import_conflict_with_force_overwrites(self):
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            save_view_preset(
+                base_dir=tmp_src, name="conflict",
+                description="新版本", issue_types=["naming", "expired"]
+            )
+            export_file = os.path.join(tmp_src, "export.json")
+            export_view_preset(tmp_src, "conflict", export_file)
+
+            save_view_preset(
+                base_dir=tmp_dst, name="conflict",
+                description="旧版本", issue_types=["missing"]
+            )
+            old_created = get_view_preset(tmp_dst, "conflict").created_at
+
+            # 强制覆盖
+            imported = import_view_preset(tmp_dst, export_file, force=True)
+            self.assertEqual(imported.description, "新版本")
+            self.assertEqual(sorted(imported.issue_types), ["expired", "naming"])
+            self.assertEqual(imported.created_at, old_created)
+
+    def test_import_conflict_with_rename_avoids_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            save_view_preset(base_dir=tmp_src, name="mypreset", description="原描述")
+            export_file = os.path.join(tmp_src, "export.json")
+            export_view_preset(tmp_src, "mypreset", export_file)
+
+            # 目标先保存同名
+            save_view_preset(base_dir=tmp_dst, name="mypreset", description="已存在")
+
+            # 改名导入
+            import_view_preset(
+                tmp_dst, export_file, rename_name="mypreset-imported"
+            )
+
+            names = sorted(p["name"] for p in list_view_presets(tmp_dst))
+            self.assertEqual(names, ["mypreset", "mypreset-imported"])
+
+    def test_bad_json_import_no_side_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # 先保存一个基线预设
+            save_view_preset(base_dir=tmp, name="baseline", description="基线")
+            baseline_hash = self._preset_dir_hash(tmp)
+
+            # 创建坏 JSON 文件
+            bad_file = os.path.join(tmp, "bad.json")
+            with open(bad_file, "w", encoding="utf-8") as f:
+                f.write("{ this is NOT valid json !!!")
+
+            with self.assertRaises(ViewPresetFormatError):
+                import_view_preset(tmp, bad_file)
+
+            # 验证未被污染
+            self.assertEqual(self._preset_dir_hash(tmp), baseline_hash)
+            presets = list_view_presets(tmp)
+            self.assertEqual(len(presets), 1)
+            self.assertEqual(presets[0]["name"], "baseline")
+
+    def test_missing_fields_import_no_side_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_view_preset(base_dir=tmp, name="baseline", description="基线")
+            baseline_hash = self._preset_dir_hash(tmp)
+
+            import json
+            bad_file = os.path.join(tmp, "missing_fields.json")
+            with open(bad_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "format_version": 1,
+                    "type": "delivery-checker-view-preset",
+                    "preset": {
+                        # 缺少 name 等必填字段
+                        "description": "坏预设"
+                    }
+                }, f)
+
+            with self.assertRaises(ViewPresetFormatError):
+                import_view_preset(tmp, bad_file)
+
+            self.assertEqual(self._preset_dir_hash(tmp), baseline_hash)
+
+    def test_wrong_type_import_no_side_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_view_preset(base_dir=tmp, name="baseline", description="基线")
+            baseline_hash = self._preset_dir_hash(tmp)
+
+            import json
+            bad_file = os.path.join(tmp, "wrong_type.json")
+            with open(bad_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "format_version": 1,
+                    "type": "delivery-checker-rule-package",  # 错误类型
+                    "preset": {"name": "x", "description": "y"}
+                }, f)
+
+            with self.assertRaises(ViewPresetFormatError):
+                import_view_preset(tmp, bad_file)
+
+            self.assertEqual(self._preset_dir_hash(tmp), baseline_hash)
+
+
+class TestStateFilteringSorting(unittest.TestCase):
+    """测试 state.py 中新增的筛选和排序功能"""
+
+    def _make_state(self, tmp):
+        rules = CheckRules(batch_name="filter-test", root_alias="t")
+        rules.source_path = os.path.join(tmp, "r.yaml")
+        from delivery_checker.models import Issue
+        state = BatchState.new(rules, tmp)
+        state.issues = {
+            "m1": Issue(id="m1", type=IssueType.MISSING, path="config.yaml",
+                        message="缺失配置文件", status=ReviewStatus.PENDING),
+            "m2": Issue(id="m2", type=IssueType.MISSING, path="docs/README.md",
+                        message="缺失说明文档", status=ReviewStatus.PASSED,
+                        reviewer="alice", reviewed_at="2026-06-10T10:00:00"),
+            "n1": Issue(id="n1", type=IssueType.NAMING, path="build/report_bad.pdf",
+                        message="命名错误", status=ReviewStatus.TODO),
+            "u1": Issue(id="u1", type=IssueType.UNTRACKED, path="temp_scratch.tmp",
+                        message="未纳入规则", status=ReviewStatus.IGNORED,
+                        reviewer="bob", reviewed_at="2026-06-11T09:00:00"),
+        }
+        return state
+
+    def test_filter_by_issue_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._make_state(tmp)
+            result = state.get_sorted_issues(issue_types=["missing"])
+            self.assertEqual(len(result), 2)
+            self.assertTrue(all(i.type == IssueType.MISSING for i in result))
+
+    def test_filter_by_multiple_types(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._make_state(tmp)
+            result = state.get_sorted_issues(issue_types=["missing", "naming"])
+            self.assertEqual(len(result), 3)
+            types = {i.type.value for i in result}
+            self.assertEqual(types, {"missing", "naming"})
+
+    def test_filter_by_review_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._make_state(tmp)
+            result = state.get_sorted_issues(review_statuses=["pending"])
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0].id, "m1")
+
+    def test_filter_by_path_keyword(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._make_state(tmp)
+            result = state.get_sorted_issues(path_keyword="config")
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0].id, "m1")
+
+    def test_filter_by_message_keyword(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._make_state(tmp)
+            result = state.get_sorted_issues(path_keyword="未纳入")
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0].id, "u1")
+
+    def test_combined_filters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._make_state(tmp)
+            result = state.get_sorted_issues(
+                issue_types=["missing"], review_statuses=["passed"]
+            )
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0].id, "m2")
+
+    def test_sort_by_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._make_state(tmp)
+            result = state.get_sorted_issues(sort_by="path", sort_order="asc")
+            paths = [i.path for i in result]
+            self.assertEqual(paths, sorted(paths))
+
+    def test_sort_by_path_desc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._make_state(tmp)
+            result = state.get_sorted_issues(sort_by="path", sort_order="desc")
+            paths = [i.path for i in result]
+            self.assertEqual(paths, sorted(paths, reverse=True))
+
+
+class TestViewPresetCliExitCodes(unittest.TestCase):
+    """CLI 退出码和端到端链路测试"""
+
+    ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+    def _run_in(self, work_dir, *args):
+        import subprocess
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.path.join(self.ROOT, "src")
+        env["PYTHONIOENCODING"] = "utf-8"
+        result = subprocess.run(
+            [sys.executable, "-m", "delivery_checker", *args],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=work_dir,
+        )
+        return result
+
+    def test_preset_save_success_exit_0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_in(
+                tmp, "preset-save",
+                "-n", "我的预设", "-d", "预设说明",
+                "-t", "missing,naming", "-F", "pending,todo",
+                "-p", "config",
+                "--sort-by", "path", "--sort-order", "asc",
+                "-r", "张工"
+            )
+            self.assertEqual(result.returncode, 0,
+                             f"stdout={result.stdout}\nstderr={result.stderr}")
+            self.assertIn("我的预设", result.stdout)
+
+    def test_preset_save_conflict_exit_3(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # 第一次成功
+            r1 = self._run_in(tmp, "preset-save", "-n", "dup")
+            self.assertEqual(r1.returncode, 0)
+            # 第二次冲突
+            r2 = self._run_in(tmp, "preset-save", "-n", "dup")
+            self.assertEqual(r2.returncode, 3)
+            self.assertIn("已存在", r2.stderr)
+            self.assertIn("-f", r2.stderr)
+
+    def test_preset_save_invalid_type_exit_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_in(tmp, "preset-save", "-n", "bad", "-t", "INVALID")
+            self.assertEqual(result.returncode, 2, f"stderr={result.stderr}")
+
+    def test_preset_list_empty_exit_0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_in(tmp, "preset-list")
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("暂无视图预设", result.stdout)
+
+    def test_preset_show_not_found_exit_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_in(tmp, "preset-show", "nonexistent")
+            self.assertEqual(result.returncode, 1, f"stderr={result.stderr}")
+
+    def test_preset_delete_not_found_exit_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_in(tmp, "preset-delete", "nonexistent")
+            self.assertEqual(result.returncode, 1, f"stderr={result.stderr}")
+
+    def test_preset_export_not_found_exit_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_in(tmp, "preset-export", "nonexistent")
+            self.assertEqual(result.returncode, 1, f"stderr={result.stderr}")
+
+    def test_preset_import_bad_json_exit_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, "bad.json")
+            with open(bad, "w", encoding="utf-8") as f:
+                f.write("{ broken }")
+            result = self._run_in(tmp, "preset-import", bad)
+            self.assertEqual(result.returncode, 2, f"stderr={result.stderr}")
+            self.assertIn("原有预设未被修改", result.stderr)
+
+    def test_preset_import_conflict_exit_3(self):
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            # 源：保存并导出
+            self._run_in(tmp_src, "preset-save", "-n", "conflict",
+                        "-t", "missing").check_returncode()
+            export_file = os.path.join(tmp_src, "exp.preset.json")
+            self._run_in(tmp_src, "preset-export", "conflict",
+                        export_file).check_returncode()
+
+            # 目标：先导入一次
+            self._run_in(tmp_dst, "preset-import", export_file).check_returncode()
+
+            # 再导入一次 → 冲突
+            result = self._run_in(tmp_dst, "preset-import", export_file)
+            self.assertEqual(result.returncode, 3, f"stderr={result.stderr}")
+            self.assertIn("-f", result.stderr)
+            self.assertIn("-N", result.stderr)
+            self.assertIn("原有预设未被修改", result.stderr)
+
+    def test_full_cli_preset_save_apply_export_chain(self):
+        """完整 CLI 链路：scan → 保存预设 → 套用预设 review → 套用预设 export → 预设导出导入"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 0) 准备 rules 和数据
+            rules_path = os.path.join(tmp, "rules.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("""batch_name: '预设链路测试'
+root_alias: 'test'
+required_files:
+  - pattern: "README.md"
+    description: "说明文档"
+  - pattern: "config/config.yaml"
+    description: "配置文件"
+  - pattern: "docs/**/*.md"
+    description: "文档目录"
+ignore_patterns:
+  - "**/*.tmp"
+""")
+            data_dir = os.path.join(tmp, "data")
+            os.makedirs(os.path.join(data_dir, "docs"))
+            os.makedirs(os.path.join(data_dir, "temp"))
+            with open(os.path.join(data_dir, "README.md"), "w") as f:
+                f.write("hello")
+            with open(os.path.join(data_dir, "docs", "notes.tmp"), "w") as f:
+                f.write("temp")
+            with open(os.path.join(data_dir, "scratch.tmp"), "w") as f:
+                f.write("scratch")
+
+            # 1) scan
+            r_scan = self._run_in(tmp, "scan", rules_path, data_dir)
+            self.assertEqual(r_scan.returncode, 0, f"scan: {r_scan.stderr}")
+
+            # 2) 保存一个预设：只看 missing 类型，按 path 排序，默认处理人 tester
+            r_save = self._run_in(
+                tmp, "preset-save",
+                "-n", "只看缺失文件",
+                "-d", "专注于缺失文件问题",
+                "-t", "missing",
+                "--sort-by", "path",
+                "-r", "tester"
+            )
+            self.assertEqual(r_save.returncode, 0,
+                             f"preset-save: {r_save.stderr}")
+            self.assertIn("只看缺失文件", r_save.stdout)
+
+            # 3) preset-list 验证
+            r_list = self._run_in(tmp, "preset-list")
+            self.assertEqual(r_list.returncode, 0)
+            self.assertIn("只看缺失文件", r_list.stdout)
+
+            # 4) preset-show 验证
+            r_show = self._run_in(tmp, "preset-show", "只看缺失文件")
+            self.assertEqual(r_show.returncode, 0)
+            self.assertIn("missing", r_show.stdout)
+            self.assertIn("tester", r_show.stdout)
+
+            # 5) 用预设 export 报告（非交互式，可验证退出码）
+            report_path = os.path.join(tmp, "filtered_report.html")
+            r_export = self._run_in(
+                tmp, "export", "预设链路测试", report_path,
+                "--preset", "只看缺失文件"
+            )
+            self.assertEqual(r_export.returncode, 0,
+                             f"export with preset: {r_export.stderr}")
+            self.assertIn("套用预设", r_export.stdout)
+            self.assertTrue(os.path.exists(report_path))
+
+            # 6) 预设导出
+            preset_export_file = os.path.join(tmp, "my_view.preset.json")
+            r_pe = self._run_in(tmp, "preset-export", "只看缺失文件", preset_export_file)
+            self.assertEqual(r_pe.returncode, 0, f"preset-export: {r_pe.stderr}")
+            self.assertTrue(os.path.exists(preset_export_file))
+
+            # 7) 在另一个目录导入
+            with tempfile.TemporaryDirectory() as tmp2:
+                r_imp = self._run_in(tmp2, "preset-import", preset_export_file)
+                self.assertEqual(r_imp.returncode, 0,
+                                 f"preset-import: {r_imp.stderr}")
+                # 验证可见
+                r_list2 = self._run_in(tmp2, "preset-list")
+                self.assertIn("只看缺失文件", r_list2.stdout)
+
+    def test_existing_commands_not_affected_by_presets(self):
+        """确保 scan/review/mark/export/undo/rule-* 原有行为不受影响"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_path = os.path.join(tmp, "rules.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("batch_name: '兼容性测试'\nroot_alias: 't'\n"
+                        "required_files:\n  - 'README.md'\n")
+            data_dir = os.path.join(tmp, "data")
+            os.makedirs(data_dir)
+
+            # scan 正常
+            r = self._run_in(tmp, "scan", rules_path, data_dir)
+            self.assertEqual(r.returncode, 0, f"scan: {r.stderr}")
+
+            # mark 正常
+            r = self._run_in(tmp, "mark", "兼容性测试", "passed",
+                            "--all-pending", "-r", "tester")
+            self.assertEqual(r.returncode, 0, f"mark: {r.stderr}")
+
+            # export（不带 preset 参数）正常
+            r = self._run_in(tmp, "export", "兼容性测试",
+                           os.path.join(tmp, "rep.html"))
+            self.assertEqual(r.returncode, 0, f"export: {r.stderr}")
+
+            # undo 正常
+            r = self._run_in(tmp, "undo", "兼容性测试")
+            self.assertEqual(r.returncode, 0, f"undo: {r.stderr}")
+
+            # rule-save 正常
+            r = self._run_in(tmp, "rule-save", rules_path,
+                            "-n", "compat", "-v", "1.0.0")
+            self.assertEqual(r.returncode, 0, f"rule-save: {r.stderr}")
+
+            # rule-list 正常
+            r = self._run_in(tmp, "rule-list")
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("compat", r.stdout)
+
+
+class TestPresetAppliedAfterUndo(unittest.TestCase):
+    """撤销后按预设查看的场景测试"""
+
+    ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+    def _run_in(self, work_dir, *args):
+        import subprocess
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.path.join(self.ROOT, "src")
+        env["PYTHONIOENCODING"] = "utf-8"
+        return subprocess.run(
+            [sys.executable, "-m", "delivery_checker", *args],
+            env=env, capture_output=True, encoding="utf-8",
+            errors="replace", cwd=work_dir,
+        )
+
+    def test_preset_filter_after_undo(self):
+        """mark passed → undo → 用只看 pending 的预设查看，应能看到恢复后的问题"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_path = os.path.join(tmp, "rules.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("""batch_name: '撤销后预设测试'
+root_alias: 'test'
+required_files:
+  - pattern: "a.txt"
+  - pattern: "b.txt"
+  - pattern: "c.txt"
+""")
+            data_dir = os.path.join(tmp, "data")
+            os.makedirs(data_dir)
+
+            # scan
+            self._run_in(tmp, "scan", rules_path, data_dir).check_returncode()
+
+            # 保存预设：只看 pending，按 path 排序
+            self._run_in(
+                tmp, "preset-save",
+                "-n", "待办视图", "-F", "pending", "--sort-by", "path"
+            ).check_returncode()
+
+            # 把第 1 个问题（a.txt）标记为 passed
+            self._run_in(
+                tmp, "mark", "撤销后预设测试", "passed",
+                "--ids", "1", "-r", "tester"
+            ).check_returncode()
+
+            # 撤销
+            r_undo = self._run_in(tmp, "undo", "撤销后预设测试")
+            self.assertEqual(r_undo.returncode, 0)
+            self.assertIn("撤销", r_undo.stdout)
+
+            # 用预设 export 一份 CSV，验证有 3 个 pending（a.txt + b.txt + c.txt）
+            csv_path = os.path.join(tmp, "after_undo.csv")
+            r_exp = self._run_in(
+                tmp, "export", "撤销后预设测试", csv_path,
+                "--preset", "待办视图", "-f", "csv"
+            )
+            self.assertEqual(r_exp.returncode, 0,
+                             f"export: {r_exp.stderr}")
+
+            with open(csv_path, "r", encoding="utf-8-sig") as f:
+                csv_content = f.read()
+            # 3 个 pending 问题 + 1 表头 = 4 行
+            lines = [l for l in csv_content.strip().split("\n") if l]
+            self.assertEqual(len(lines), 4, f"CSV: {csv_content}")
+            # 每行状态都是"待复核"
+            for line in lines[1:]:
+                self.assertIn("待复核", line)
 
 
 if __name__ == "__main__":

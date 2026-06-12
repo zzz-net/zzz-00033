@@ -1,0 +1,7 @@
+batch_name: "reviewer-preset-check"
+root_alias: "rv"
+required_files:
+  - pattern: "README.md"
+    description: "说明"
+  - pattern: "config/config.yaml"
+    description: "配置"

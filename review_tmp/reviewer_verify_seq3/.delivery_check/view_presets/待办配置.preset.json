@@ -1,0 +1,17 @@
+{
+  "name": "待办配置",
+  "description": "",
+  "issue_types": [
+    "missing"
+  ],
+  "review_statuses": [
+    "pending",
+    "todo"
+  ],
+  "path_keyword": "config",
+  "sort_by": "path",
+  "sort_order": "asc",
+  "default_reviewer": "reviewer",
+  "created_at": "2026-06-12T15:31:45",
+  "updated_at": "2026-06-12T15:31:45"
+}

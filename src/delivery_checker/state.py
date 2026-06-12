@@ -215,19 +215,66 @@ class BatchState:
         issue.reviewed_at = record.prev_reviewed_at
         return issue
 
-    def get_sorted_issues(self) -> List[Issue]:
-        order = [
+    def get_sorted_issues(
+        self,
+        issue_types: Optional[List[str]] = None,
+        review_statuses: Optional[List[str]] = None,
+        path_keyword: str = "",
+        sort_by: str = "type",
+        sort_order: str = "asc",
+    ) -> List[Issue]:
+        issues = list(self.issues.values())
+
+        if issue_types:
+            type_set = {t.strip().lower() for t in issue_types if t and t.strip()}
+            if type_set:
+                issues = [i for i in issues if i.type.value in type_set]
+
+        if review_statuses:
+            status_set = {s.strip().lower() for s in review_statuses if s and s.strip()}
+            if status_set:
+                issues = [i for i in issues if i.status.value in status_set]
+
+        if path_keyword:
+            kw = path_keyword.strip()
+            if kw:
+                issues = [i for i in issues if kw in i.path or kw in (i.message or "")]
+
+        type_order = [
             ("missing", 0),
             ("naming", 1),
             ("expired", 2),
             ("duplicate", 3),
             ("untracked", 4),
         ]
-        order_map = {k: v for k, v in order}
-        return sorted(
-            self.issues.values(),
-            key=lambda i: (order_map.get(i.type.value, 99), i.path, i.id),
-        )
+        type_order_map = {k: v for k, v in type_order}
+        status_order = [
+            ("pending", 0),
+            ("todo", 1),
+            ("passed", 2),
+            ("ignored", 3),
+        ]
+        status_order_map = {k: v for k, v in status_order}
+
+        sort_by = (sort_by or "type").strip().lower()
+        sort_order = (sort_order or "asc").strip().lower()
+        reverse = sort_order == "desc"
+
+        def _sort_key(i: Issue):
+            if sort_by == "path":
+                return (i.path.lower(), i.id)
+            elif sort_by == "status":
+                return (status_order_map.get(i.status.value, 99), i.path.lower(), i.id)
+            elif sort_by == "reviewed_at":
+                return (i.reviewed_at or "", i.path.lower(), i.id)
+            elif sort_by == "created_at":
+                return (i.id, i.path.lower())
+            elif sort_by == "id":
+                return (i.id,)
+            else:
+                return (type_order_map.get(i.type.value, 99), i.path.lower(), i.id)
+
+        return sorted(issues, key=_sort_key, reverse=reverse)
 
 
 def create_or_resume_batch(

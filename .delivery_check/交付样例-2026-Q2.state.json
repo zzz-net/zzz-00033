@@ -118,13 +118,13 @@
       "path": "config/config.yaml",
       "message": "缺少必需文件或目录匹配项: config/config.yaml（部署配置模板）",
       "detail": "部署配置模板",
-      "status": "ignored",
-      "reviewer": "李四",
-      "note": "客户豁免此项",
-      "reviewed_at": "2026-06-12T08:56:48",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
       "group_key": null,
       "type_label": "必需文件缺失",
-      "status_label": "忽略"
+      "status_label": "待复核"
     },
     "f978968913c5": {
       "id": "f978968913c5",
@@ -132,13 +132,13 @@
       "path": "CHANGELOG.md",
       "message": "缺少必需文件或目录匹配项: CHANGELOG.md（版本变更记录）",
       "detail": "版本变更记录",
-      "status": "passed",
-      "reviewer": "张三",
-      "note": "已单独邮件确认",
-      "reviewed_at": "2026-06-12T08:56:48",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
       "group_key": null,
       "type_label": "必需文件缺失",
-      "status_label": "通过"
+      "status_label": "待复核"
     },
     "a2696823ecd6": {
       "id": "a2696823ecd6",
@@ -253,24 +253,7 @@
       "status_label": "待复核"
     }
   },
-  "undo_stack": [
-    {
-      "issue_id": "f978968913c5",
-      "prev_status": "pending",
-      "prev_reviewer": null,
-      "prev_note": "",
-      "prev_reviewed_at": null,
-      "timestamp": "2026-06-12T08:56:48"
-    },
-    {
-      "issue_id": "af627d3f24b6",
-      "prev_status": "pending",
-      "prev_reviewer": null,
-      "prev_note": "",
-      "prev_reviewed_at": null,
-      "timestamp": "2026-06-12T08:56:48"
-    }
-  ],
+  "undo_stack": [],
   "created_at": "2026-06-12T08:42:34",
-  "updated_at": "2026-06-12T12:11:49"
+  "updated_at": "2026-06-12T15:17:25"
 }

@@ -1,0 +1,12 @@
+{
+  "name": "配置相关",
+  "description": "配置类文件",
+  "issue_types": [],
+  "review_statuses": [],
+  "path_keyword": "config",
+  "sort_by": "path",
+  "sort_order": "asc",
+  "default_reviewer": "",
+  "created_at": "2026-06-12T15:14:59",
+  "updated_at": "2026-06-12T15:14:59"
+}

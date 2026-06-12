@@ -357,6 +357,140 @@ dc.bat rule-import standard-delivery.rulepkg.json -f
 
 ---
 
+## 🎛️ 视图预设（筛选/排序/默认处理人一键套用）
+
+如果经常处理不同资料包，可把常用的筛选条件、排序方式、默认处理人存为**命名视图预设**，下次一键套用，不用每次输参数。所有预设会落到 `.delivery_check/view_presets/` 本地配置，**跨重启依然可用**。
+
+### 预设内容字段
+
+| 字段 | 说明 | 可选值 / 格式 |
+|------|------|--------------|
+| 问题类型 `-t` | 只看某些问题类型 | `missing,naming,expired,duplicate,untracked` 逗号分隔 |
+| 复核状态 `-f` | 按复核状态过滤 | `pending,passed,ignored,todo` 逗号分隔 |
+| 路径关键字 `-p` | 按路径或描述子串匹配 | 任意字符串 |
+| 排序字段 `--sort-by` | 排序维度 | `type` / `path` / `status` / `reviewed_at` / `id` |
+| 排序方向 `--sort-order` | 升序或降序 | `asc` / `desc` |
+| 默认处理人 `-r` | 进入复核时的 reviewer | 任意字符串 |
+| 说明 `-d` | 可读的预设用途备注 | 任意字符串 |
+
+### 步骤 1：保存预设
+
+```bash
+# 示例 A：只看缺失文件，按路径排序，默认处理人「张工」
+dc.bat preset-save ^
+  -n "缺失文件优先" ^
+  -d "专注资料包必需文件缺失问题" ^
+  -t missing ^
+  --sort-by path --sort-order asc ^
+  -r "张工"
+
+# 示例 B：只看待办 + 待复核，按状态倒序
+dc.bat preset-save -n "今日待办" -f pending,todo --sort-by status --sort-order desc
+
+# 示例 C：只看路径含 config 的文件（配置文件专区）
+dc.bat preset-save -n "配置文件相关" -p "config"
+```
+
+**输出**：
+```
+✅ 视图预设已保存
+   名称: 缺失文件优先
+   说明: 专注资料包必需文件缺失问题
+   问题类型: missing
+   排序方式: path / asc
+   默认处理人: 张工
+   创建时间: 2026-06-12T...
+```
+
+### 步骤 2：查看 / 列出预设
+
+```bash
+# 列出所有预设（表格视图）
+dc.bat preset-list
+
+# 查看某个预设的完整详情
+dc.bat preset-show "缺失文件优先"
+```
+
+### 步骤 3：在 review / export 中套用预设
+
+套用预设使用 `--preset <名称>` 参数，支持在 `review`、`export` 命令上。
+
+**参数组合规则（避免绕）：CLI 显式指定的参数优先于预设值，缺省时回退预设。** 屏幕会用一行提示清楚标出「哪些来自预设、哪些来自 CLI」。
+
+```bash
+# ① 纯预设（全部从预设取值）
+dc.bat review "交付样例-2026-Q2" --preset "缺失文件优先"
+# 屏幕提示：🔍 套用预设「缺失文件优先」| 类型筛选(预设): missing | 排序字段(预设): path | 默认处理人(预设): 张工
+
+# ② 预设 + CLI 覆盖排序方式（CLI 优先）
+dc.bat review "交付样例-2026-Q2" --preset "缺失文件优先" --sort-by reviewed_at --sort-order desc
+# 屏幕提示：🔍 套用预设「缺失文件优先」| 类型筛选(预设): missing | 排序字段(CLI): reviewed_at | 排序方向(CLI): desc | ...
+
+# ③ 预设 + 额外追加关键字（只看 config 相关的 missing）
+dc.bat review "交付样例-2026-Q2" --preset "缺失文件优先" -p "config"
+
+# ④ 非交互式套用预设导出报告
+dc.bat export "交付样例-2026-Q2" report.html --preset "缺失文件优先"
+
+# ⑤ 套用预设 + 覆盖状态 → 只看 passed 的 missing
+dc.bat export "交付样例-2026-Q2" report.csv -f csv --preset "缺失文件优先" -f passed
+```
+
+> **撤销后按预设查看**：如果 `undo` 撤销了若干标记，再用 `--preset "今日待办"`（只看 `pending,todo`）review / export，立刻看到恢复后的待办清单。
+
+### 步骤 4：导出 / 导入预设（团队共享）
+
+```bash
+# 导出预设为 JSON 文件（单文件，可分享）
+dc.bat preset-export "缺失文件优先" missing-first.preset.json
+
+# 在另一台机器 / 另一个工作目录导入
+dc.bat preset-import missing-first.preset.json
+
+# 导入时改名（避免同名冲突）
+dc.bat preset-import missing-first.preset.json -N "我的缺失视图"
+
+# 强制覆盖同名预设
+dc.bat preset-import missing-first.preset.json -f
+```
+
+### 冲突处理示例
+
+**场景 A：同名预设已存在（preset-save / preset-import）**
+```
+⚠️  视图预设「缺失文件优先」已存在。
+   加 -f 覆盖，或换个名称保存。
+```
+退出码：**3**。原有预设**不被修改**。
+
+**场景 B：导入文件是坏 JSON / 缺字段 / 格式错误**
+```
+❌ 预设格式错误: JSON 解析失败 bad.json: Expecting property name...
+   （原有预设未被修改）
+```
+退出码：**2**。原有预设**不被污染**。
+
+**场景 C：目录无写权限**
+```
+❌ 权限错误: 无法创建目录 ...: Permission denied
+```
+退出码：**4**。
+
+### 视图预设文件结构
+
+```
+.delivery_check/
+  view_presets/
+    index.json                 # 持久化索引（原子写入）
+    缺失文件优先.preset.json    # 预设本体
+```
+
+- 索引和预设都是原子写入（先写 tmp → move 替换）
+- 批次状态目录（`*.state.json`）与规则包目录（`rule_packages/`）完全独立，预设操作绝不读取或修改它们
+
+---
+
 ## ⚠️ 边界场景提示
 
 所有边界场景都**不会清除既有批次状态**。
@@ -534,15 +668,21 @@ metadata:
 | 命令 | 说明 |
 |------|------|
 | `dc.bat scan <rules> <data_dir> [--force] [--no-merge]` | 扫描，自动创建/续办批次 |
-| `dc.bat review <batch> [-r 处理人] [-f 状态过滤] [-a]` | 交互式复核 |
+| `dc.bat review <batch> [-r 处理人] [-f 状态过滤] [-t 类型过滤] [-p 关键字] [--sort-by ...] [--sort-order ...] [--preset <名称>] [-a]` | 交互式复核（支持预设 + 筛选） |
 | `dc.bat mark <batch> <passed\|ignored\|todo\|pending> [--ids 1,3] [--all-pending] [-n 备注] [-r 处理人]` | 批量标记 |
 | `dc.bat undo <batch> [--steps N]` | 撤销最近 N 步复核 |
-| `dc.bat export <batch> [输出文件] [-f html\|csv\|auto]` | 导出报告 |
+| `dc.bat export <batch> [输出文件] [-f html\|csv\|auto] [-F 状态过滤] [-t 类型过滤] [-p 关键字] [--preset <名称>]` | 导出报告（支持预设 + 筛选） |
 | `dc.bat list` | 列出所有历史批次 |
 | `dc.bat rule-save <rules> --name <name> --version <ver> [--description <desc>] [--force]` | 保存规则为命名规则包 |
 | `dc.bat rule-list` | 列出所有已保存的规则包 |
 | `dc.bat rule-export <name> <version> [output]` | 导出规则包为可分享文件 |
 | `dc.bat rule-import <file> [-f] [-N <name>] [-V <version>]` | 导入规则包，支持覆盖或改名 |
+| `dc.bat preset-save -n <名称> [-d 说明] [-t 类型] [-f 状态] [-p 关键字] [--sort-by ...] [--sort-order ...] [-r 处理人] [-f 覆盖]` | 保存视图预设 |
+| `dc.bat preset-list` | 列出所有视图预设 |
+| `dc.bat preset-show <名称>` | 查看某预设完整详情 |
+| `dc.bat preset-delete <名称>` | 删除视图预设 |
+| `dc.bat preset-export <名称> [output]` | 导出预设为可分享 JSON |
+| `dc.bat preset-import <file> [-f] [-N 新名称]` | 导入预设，支持覆盖或改名 |
 | `dc.bat --no-color ...` | 禁用彩色输出（日志/管道场景） |
 
 **退出码说明**：
@@ -550,9 +690,9 @@ metadata:
 | 退出码 | 含义 |
 |--------|------|
 | 0 | 成功 |
-| 1 | 目录不存在 / 文件不存在 / 运行时错误 |
-| 2 | 规则配置格式/语义错误 / 规则包格式错误 |
-| 3 | 重复扫描 / 规则/目录不一致 / 规则包同名同版本冲突（拒绝执行，未修改旧状态） |
+| 1 | 目录不存在 / 文件不存在 / 预设不存在 / 运行时错误 |
+| 2 | 规则配置格式/语义错误 / 规则包或预设格式错误（坏 JSON / 缺字段） |
+| 3 | 重复扫描 / 规则/目录不一致 / 规则包或预设同名冲突（拒绝执行，未修改旧状态） |
 | 4 | 状态文件读写失败 / 权限不足 |
 | 130 | Ctrl+C 中断 |
 

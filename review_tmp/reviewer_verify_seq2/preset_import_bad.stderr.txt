@@ -1,0 +1,2 @@
+❌ 预设格式错误: JSON 解析失败 D:\workSpace\AI__SPACE\zzz-00033\review_tmp\reviewer_verify_seq2\bad.json: Expecting property name enclosed in double quotes: line 1 column 3 (char 2)
+   （原有预设未被修改）
