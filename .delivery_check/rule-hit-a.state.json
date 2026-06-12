@@ -1,0 +1,51 @@
+{
+  "batch_name": "rule-hit-a",
+  "data_dir": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\reviewer_rulehit_case\\data",
+  "rules": {
+    "batch_name": "rule-hit-a",
+    "root_alias": "hit",
+    "required_files": [
+      {
+        "pattern": "build/report*.pdf",
+        "description": "",
+        "optional": false,
+        "naming_rule": "rule-a",
+        "expiry_date": null,
+        "max_matches": null
+      }
+    ],
+    "naming_rules": [
+      {
+        "pattern": "build/report*.pdf",
+        "regex": "^good_a_\\d{8}\\.pdf$",
+        "name": "rule-a",
+        "description": "A规则"
+      }
+    ],
+    "ignore_patterns": [],
+    "expiry_date": null,
+    "metadata": {},
+    "source_path": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\reviewer_rulehit_case\\rules_hit_a.yaml",
+    "source_hash": "ddc3636237acf635"
+  },
+  "rules_hash": "ddc3636237acf635",
+  "issues": {
+    "c3355242ae43": {
+      "id": "c3355242ae43",
+      "type": "naming",
+      "path": "build/report_bad.pdf",
+      "message": "文件命名不符合规则「rule-a」",
+      "detail": "要求: A规则",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "命名不符合规范",
+      "status_label": "待复核"
+    }
+  },
+  "undo_stack": [],
+  "created_at": "2026-06-12T16:35:23",
+  "updated_at": "2026-06-12T16:35:23"
+}

@@ -1,0 +1,17 @@
+{
+  "configs": {
+    "reviewer-daily": {
+      "description": "",
+      "source_a": "reviewer-a",
+      "source_b": "reviewer-b",
+      "source_a_type": "name",
+      "source_b_type": "name",
+      "export_format": "json",
+      "export_path": "review_tmp\\reviewer_cdx_final\\saved_diff.json",
+      "conflict_strategy": "rename",
+      "created_at": "2026-06-12T16:35:54",
+      "updated_at": "2026-06-12T16:35:54",
+      "config_file": "reviewer-daily.compare.json"
+    }
+  }
+}

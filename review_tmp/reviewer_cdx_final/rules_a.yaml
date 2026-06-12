@@ -1,0 +1,9 @@
+batch_name: reviewer-a
+root_alias: demo
+required_files:
+  - pattern: README.md
+  - pattern: docs/**/*.md
+  - pattern: config/config.yaml
+  - pattern: deliverables/slot_*.txt
+    max_matches: 1
+ignore_patterns: []

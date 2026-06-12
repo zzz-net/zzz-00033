@@ -1,0 +1,110 @@
+{
+  "batch_name": "reviewer-a",
+  "data_dir": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\reviewer_cdx_final\\data",
+  "rules": {
+    "batch_name": "reviewer-a",
+    "root_alias": "demo",
+    "required_files": [
+      {
+        "pattern": "README.md",
+        "description": "",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "docs/**/*.md",
+        "description": "",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "config/config.yaml",
+        "description": "",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "deliverables/slot_*.txt",
+        "description": "",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": 1
+      }
+    ],
+    "naming_rules": [],
+    "ignore_patterns": [],
+    "expiry_date": null,
+    "metadata": {},
+    "source_path": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\reviewer_cdx_final\\rules_a.yaml",
+    "source_hash": "0009e736eace80df"
+  },
+  "rules_hash": "0009e736eace80df",
+  "issues": {
+    "af627d3f24b6": {
+      "id": "af627d3f24b6",
+      "type": "missing",
+      "path": "config/config.yaml",
+      "message": "缺少必需文件或目录匹配项: config/config.yaml",
+      "detail": "",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "必需文件缺失",
+      "status_label": "待复核"
+    },
+    "8d3233d0dd6e": {
+      "id": "8d3233d0dd6e",
+      "type": "duplicate",
+      "path": "deliverables/slot_b.txt",
+      "message": "超出必需槽位「deliverables/slot_*.txt」的数量限制（最多 1 个）",
+      "detail": "已匹配 2 个文件: deliverables/slot_a.txt, deliverables/slot_b.txt",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": "slot-deliverables/slot_*.txt",
+      "type_label": "重复文件",
+      "status_label": "待复核"
+    },
+    "4b69eb84a6e5": {
+      "id": "4b69eb84a6e5",
+      "type": "untracked",
+      "path": "extra.txt",
+      "message": "文件不在规则清单中",
+      "detail": "未被任何 required_files 规则匹配",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "未纳入规则的文件",
+      "status_label": "待复核"
+    },
+    "24bb1273c40d": {
+      "id": "24bb1273c40d",
+      "type": "untracked",
+      "path": "src/main.py",
+      "message": "文件不在规则清单中",
+      "detail": "未被任何 required_files 规则匹配",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "未纳入规则的文件",
+      "status_label": "待复核"
+    }
+  },
+  "undo_stack": [],
+  "created_at": "2026-06-12T16:34:54",
+  "updated_at": "2026-06-12T16:34:54"
+}

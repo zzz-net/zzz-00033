@@ -1,0 +1,11 @@
+batch_name: rule-hit-a
+root_alias: hit
+required_files:
+  - pattern: build/report*.pdf
+    naming_rule: rule-a
+naming_rules:
+  - name: rule-a
+    pattern: build/report*.pdf
+    regex: ^good_a_\d{8}\.pdf$
+    description: A规则
+ignore_patterns: []

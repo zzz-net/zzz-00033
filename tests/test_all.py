@@ -10,6 +10,8 @@ import os
 import sys
 import tempfile
 import unittest
+import json
+import hashlib
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -65,6 +67,26 @@ from delivery_checker.view_preset import (
     import_view_preset,
     list_view_presets,
     save_view_preset,
+)
+from delivery_checker.compare import (
+    CompareConfig,
+    CompareConfigConflictError,
+    CompareConfigError,
+    CompareConfigNotFoundError,
+    CompareError,
+    BatchNotFoundError,
+    ExportConflictError,
+    ExportPermissionError,
+    compare_batches,
+    compare_by_source,
+    delete_compare_config,
+    export_compare_result,
+    get_compare_config,
+    list_compare_configs,
+    save_compare_config,
+    _compute_match_key,
+    _normalize_path,
+    _detect_changes,
 )
 
 
@@ -2559,6 +2581,782 @@ required_files:
             # 每行状态都是"待复核"
             for line in lines[1:]:
                 self.assertIn("待复核", line)
+
+
+class TestComparePathNormalization(unittest.TestCase):
+    """测试路径标准化：大小写、相对路径、分隔符统一。"""
+
+    def test_normalize_path_case_insensitive(self):
+        self.assertEqual(_normalize_path("README.md"), _normalize_path("readme.md"))
+        self.assertEqual(_normalize_path("SRC/MAIN.PY"), _normalize_path("src/main.py"))
+
+    def test_normalize_path_separators(self):
+        self.assertEqual(
+            _normalize_path("docs\\design.md"),
+            _normalize_path("docs/design.md")
+        )
+
+    def test_normalize_path_relative_and_absolute(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = "README.md"
+            abs_path = os.path.join(tmp, "README.md")
+            # 相对路径标准化后应该一致
+            self.assertEqual(
+                _normalize_path(rel, tmp),
+                _normalize_path(abs_path, tmp).lower()
+            )
+
+    def test_compute_match_key_stable(self):
+        """同一问题在不同批次中应生成相同匹配键。"""
+        from delivery_checker.models import Issue, IssueType, ReviewStatus
+        i1 = Issue(
+            id="abc1",
+            type=IssueType.MISSING,
+            path="CHANGELOG.md",
+            message="缺失",
+            status=ReviewStatus.PENDING,
+        )
+        i2 = Issue(
+            id="abc2",
+            type=IssueType.MISSING,
+            path="CHANGELOG.md",
+            message="缺失",
+            status=ReviewStatus.PASSED,
+        )
+        # 路径和类型相同，即使 id 不同、状态不同，匹配键应相同
+        self.assertEqual(_compute_match_key(i1), _compute_match_key(i2))
+
+    def test_compute_match_key_group_key(self):
+        """有 group_key 的重复文件用 group_key 匹配。"""
+        from delivery_checker.models import Issue, IssueType, ReviewStatus
+        i1 = Issue(
+            id="dup1",
+            type=IssueType.DUPLICATE,
+            path="a/backup.txt",
+            message="重复",
+            status=ReviewStatus.PENDING,
+            group_key="slot-file-group",
+        )
+        i2 = Issue(
+            id="dup2",
+            type=IssueType.DUPLICATE,
+            path="b/backup.txt",
+            message="重复",
+            status=ReviewStatus.PENDING,
+            group_key="slot-file-group",
+        )
+        self.assertEqual(_compute_match_key(i1), _compute_match_key(i2))
+
+    def test_detect_changes_all_fields(self):
+        from delivery_checker.models import Issue, IssueType, ReviewStatus
+        old = Issue(
+            id="1", type=IssueType.MISSING, path="a.md", message="old msg",
+            status=ReviewStatus.PENDING, reviewer=None, note="",
+        )
+        new = Issue(
+            id="1", type=IssueType.NAMING, path="a.md", message="new msg",
+            status=ReviewStatus.PASSED, reviewer="张三", note="已处理",
+        )
+        changes = _detect_changes(old, new)
+        self.assertIn("type", changes)
+        self.assertIn("status", changes)
+        self.assertIn("reviewer", changes)
+        self.assertIn("message", changes)
+        self.assertIn("note", changes)
+
+
+class TestCompareCoreLogic(unittest.TestCase):
+    """核心对比逻辑：新增/消失/状态变化/处理人变化。"""
+
+    def _make_issue(self, issue_id, issue_type, path, status=ReviewStatus.PENDING,
+                    reviewer=None, message="test"):
+        from delivery_checker.models import Issue, IssueType
+        itype = IssueType(issue_type) if isinstance(issue_type, str) else issue_type
+        return Issue(
+            id=issue_id, type=itype, path=path, message=message,
+            status=status, reviewer=reviewer,
+        )
+
+    def _make_state(self, batch_name, issues, tmp):
+        rules = CheckRules(batch_name=batch_name, root_alias="test")
+        rules.source_path = os.path.join(tmp, "r.yaml")
+        state = BatchState.new(rules, tmp)
+        state.issues = {i.id: i for i in issues}
+        return state
+
+    def test_compare_added_and_removed(self):
+        """新增和消失问题正确识别。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            i_old = self._make_issue("1", "missing", "a.md")
+            i_new = self._make_issue("2", "missing", "b.md")
+            state_a = self._make_state("batch-a", [i_old], tmp)
+            state_b = self._make_state("batch-b", [i_new], tmp)
+
+            result = compare_batches(tmp, state_a, state_b)
+            self.assertEqual(len(result.removed), 1)
+            self.assertEqual(len(result.added), 1)
+            self.assertEqual(result.removed[0].path, "a.md")
+            self.assertEqual(result.added[0].path, "b.md")
+
+    def test_compare_status_change(self):
+        """状态变化被识别。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            i_old = self._make_issue("1", "missing", "a.md", ReviewStatus.PENDING)
+            i_new = self._make_issue("1", "missing", "a.md", ReviewStatus.PASSED)
+            state_a = self._make_state("batch-a", [i_old], tmp)
+            state_b = self._make_state("batch-b", [i_new], tmp)
+
+            result = compare_batches(tmp, state_a, state_b)
+            self.assertEqual(len(result.changed), 1)
+            self.assertIn("status", result.changed[0].change_types)
+            self.assertEqual(len(result.unchanged), 0)
+
+    def test_compare_reviewer_change(self):
+        """处理人变化被识别。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            i_old = self._make_issue("1", "missing", "a.md", ReviewStatus.PASSED, "李四")
+            i_new = self._make_issue("1", "missing", "a.md", ReviewStatus.PASSED, "王五")
+            state_a = self._make_state("batch-a", [i_old], tmp)
+            state_b = self._make_state("batch-b", [i_new], tmp)
+
+            result = compare_batches(tmp, state_a, state_b)
+            self.assertEqual(len(result.changed), 1)
+            self.assertIn("reviewer", result.changed[0].change_types)
+
+    def test_compare_unchanged(self):
+        """完全相同的问题归入 unchanged。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            i_old = self._make_issue("1", "missing", "a.md", ReviewStatus.PASSED, "张三", "ok")
+            i_new = self._make_issue("2", "missing", "a.md", ReviewStatus.PASSED, "张三", "ok")
+            state_a = self._make_state("batch-a", [i_old], tmp)
+            state_b = self._make_state("batch-b", [i_new], tmp)
+
+            result = compare_batches(tmp, state_a, state_b)
+            self.assertEqual(len(result.unchanged), 1)
+            self.assertEqual(len(result.changed), 0)
+
+    def test_compare_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            i1 = self._make_issue("1", "missing", "a.md", ReviewStatus.PENDING)
+            i2 = self._make_issue("2", "missing", "b.md", ReviewStatus.PENDING)
+            i3 = self._make_issue("3", "missing", "c.md", ReviewStatus.PENDING)
+            i1b = self._make_issue("1", "missing", "a.md", ReviewStatus.PASSED, "张三")
+            i2b = self._make_issue("2", "missing", "b.md", ReviewStatus.PENDING)
+            i4 = self._make_issue("4", "missing", "d.md", ReviewStatus.PENDING)
+            state_a = self._make_state("batch-a", [i1, i2, i3], tmp)
+            state_b = self._make_state("batch-b", [i1b, i2b, i4], tmp)
+
+            result = compare_batches(tmp, state_a, state_b)
+            summary = result.summary()
+            self.assertEqual(summary["added"], 1)      # d.md 新增
+            self.assertEqual(summary["removed"], 1)    # c.md 消失
+            self.assertEqual(summary["changed"], 1)    # a.md 状态+处理人变化
+            self.assertEqual(summary["unchanged"], 1)  # b.md 未变
+            self.assertEqual(summary["status_changed"], 1)
+            self.assertEqual(summary["reviewer_changed"], 1)
+
+
+class TestCompareConfigPersistence(unittest.TestCase):
+    """对比配置持久化：保存、读取、跨重启、删除。"""
+
+    def test_save_and_get_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = save_compare_config(
+                base_dir=tmp,
+                name="daily-compare",
+                description="每日对比前两个批次",
+                source_a="1",
+                source_b="2",
+                source_a_type="latest",
+                source_b_type="latest",
+                export_format="json",
+                export_path="daily_diff.json",
+                conflict_strategy="rename",
+            )
+            self.assertEqual(cfg.name, "daily-compare")
+            self.assertEqual(cfg.source_a, "1")
+            self.assertEqual(cfg.source_a_type, "latest")
+
+            loaded = get_compare_config(tmp, "daily-compare")
+            self.assertEqual(loaded.name, cfg.name)
+            self.assertEqual(loaded.description, cfg.description)
+            self.assertEqual(loaded.source_a, cfg.source_a)
+            self.assertEqual(loaded.source_a_type, cfg.source_a_type)
+            self.assertEqual(loaded.export_format, cfg.export_format)
+            self.assertEqual(loaded.conflict_strategy, cfg.conflict_strategy)
+
+    def test_config_persistence_across_reload(self):
+        """模拟重启后配置仍然存在。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 第一次"启动"：保存
+            save_compare_config(
+                base_dir=tmp,
+                name="persist-test",
+                source_a="batch-old",
+                source_b="batch-new",
+                source_a_type="name",
+                source_b_type="name",
+            )
+            self.assertEqual(len(list_compare_configs(tmp)), 1)
+
+            # 模拟"重启"：重新调用 list 和 get
+            configs = list_compare_configs(tmp)
+            self.assertEqual(len(configs), 1)
+            self.assertEqual(configs[0]["name"], "persist-test")
+
+            loaded = get_compare_config(tmp, "persist-test")
+            self.assertEqual(loaded.source_a, "batch-old")
+            self.assertEqual(loaded.source_b, "batch-new")
+
+    def test_config_conflict_no_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_compare_config(tmp, "dup", source_a="a", source_b="b")
+            with self.assertRaises(CompareConfigConflictError):
+                save_compare_config(tmp, "dup", source_a="c", source_b="d")
+
+    def test_config_conflict_with_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_compare_config(tmp, "dup", source_a="a", source_b="b")
+            cfg = save_compare_config(tmp, "dup", source_a="c", source_b="d", force=True)
+            self.assertEqual(cfg.source_a, "c")
+
+    def test_config_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(CompareConfigNotFoundError):
+                get_compare_config(tmp, "no-such-config")
+
+    def test_config_corrupted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_compare_config(tmp, "bad", source_a="a", source_b="b")
+            cfg_path = os.path.join(tmp, ".delivery_check", "compare_configs", "bad.compare.json")
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                f.write("{ this is not valid json !!!")
+            with self.assertRaises(CompareConfigError):
+                get_compare_config(tmp, "bad")
+
+    def test_delete_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            save_compare_config(tmp, "todelete", source_a="a", source_b="b")
+            self.assertEqual(len(list_compare_configs(tmp)), 1)
+            delete_compare_config(tmp, "todelete")
+            self.assertEqual(len(list_compare_configs(tmp)), 0)
+            with self.assertRaises(CompareConfigNotFoundError):
+                get_compare_config(tmp, "todelete")
+
+    def test_list_configs_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            configs = list_compare_configs(tmp)
+            self.assertEqual(configs, [])
+
+
+class TestCompareExport(unittest.TestCase):
+    """导出功能：JSON/CSV、冲突处理、权限错误。"""
+
+    def _make_result(self):
+        from delivery_checker.models import Issue, IssueType, ReviewStatus
+        from delivery_checker.compare import CompareResult, ChangedIssue
+        result = CompareResult(
+            batch_a_name="batch-a",
+            batch_b_name="batch-b",
+            compared_at="2026-06-12T12:00:00",
+        )
+        result.added.append(Issue(
+            id="add1", type=IssueType.MISSING, path="new.md",
+            message="新增缺失", status=ReviewStatus.PENDING,
+        ))
+        result.removed.append(Issue(
+            id="rem1", type=IssueType.NAMING, path="old.pdf",
+            message="命名问题已修复", status=ReviewStatus.PASSED,
+            reviewer="张三",
+        ))
+        i_old = Issue(
+            id="chg1", type=IssueType.MISSING, path="chg.md",
+            message="描述", status=ReviewStatus.PENDING,
+        )
+        i_new = Issue(
+            id="chg1", type=IssueType.MISSING, path="chg.md",
+            message="描述", status=ReviewStatus.PASSED,
+            reviewer="李四",
+        )
+        result.changed.append(ChangedIssue(
+            match_key="missing::path::chg.md",
+            old_issue=i_old,
+            new_issue=i_new,
+            change_types=["status", "reviewer"],
+        ))
+        return result
+
+    def test_export_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._make_result()
+            out_path = os.path.join(tmp, "diff.json")
+            saved = export_compare_result(result, out_path, "json", "overwrite")
+            self.assertTrue(os.path.exists(saved))
+            with open(saved, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertEqual(data["batch_a"]["name"], "batch-a")
+            self.assertEqual(data["batch_b"]["name"], "batch-b")
+            self.assertEqual(data["summary"]["added"], 1)
+            self.assertEqual(data["summary"]["removed"], 1)
+            self.assertEqual(data["summary"]["changed"], 1)
+            self.assertEqual(len(data["added"]), 1)
+            self.assertEqual(len(data["removed"]), 1)
+            self.assertEqual(len(data["changed"]), 1)
+
+    def test_export_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._make_result()
+            out_path = os.path.join(tmp, "diff.csv")
+            saved = export_compare_result(result, out_path, "csv", "overwrite")
+            self.assertTrue(os.path.exists(saved))
+            with open(saved, "r", encoding="utf-8-sig") as f:
+                lines = f.readlines()
+            self.assertGreater(len(lines), 2)
+            header = lines[0]
+            self.assertIn("差异类型", header)
+            self.assertIn("匹配键", header)
+            self.assertIn("旧状态", header)
+            self.assertIn("新状态", header)
+
+    def test_export_conflict_rename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._make_result()
+            out_path = os.path.join(tmp, "conflict.json")
+            # 创建已存在的文件
+            with open(out_path, "w") as f:
+                f.write("existing")
+            saved = export_compare_result(result, out_path, "json", "rename")
+            self.assertNotEqual(saved, out_path)
+            self.assertTrue(saved.endswith("_1.json"))
+            self.assertTrue(os.path.exists(saved))
+            # 原文件未被覆盖
+            with open(out_path, "r") as f:
+                self.assertEqual(f.read(), "existing")
+
+    def test_export_conflict_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._make_result()
+            out_path = os.path.join(tmp, "conflict.json")
+            with open(out_path, "w") as f:
+                f.write("existing")
+            saved = export_compare_result(result, out_path, "json", "overwrite")
+            self.assertEqual(saved, out_path)
+            # 原文件被覆盖
+            with open(out_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertEqual(data["batch_a"]["name"], "batch-a")
+
+    def test_export_conflict_refuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._make_result()
+            out_path = os.path.join(tmp, "conflict.json")
+            with open(out_path, "w") as f:
+                f.write("existing")
+            with self.assertRaises(ExportConflictError):
+                export_compare_result(result, out_path, "json", "refuse")
+            # 原文件未被修改
+            with open(out_path, "r") as f:
+                self.assertEqual(f.read(), "existing")
+
+    def test_export_auto_format_from_extension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._make_result()
+            json_path = os.path.join(tmp, "auto.json")
+            csv_path = os.path.join(tmp, "auto.csv")
+            saved_json = export_compare_result(result, json_path, "auto", "overwrite")
+            saved_csv = export_compare_result(result, csv_path, "auto", "overwrite")
+            with open(saved_json, "r", encoding="utf-8") as f:
+                json.load(f)
+            with open(saved_csv, "r", encoding="utf-8-sig") as f:
+                self.assertIn("差异类型", f.readline())
+
+
+class TestCompareBySource(unittest.TestCase):
+    """按来源（名称 / 最近N次）选择批次。"""
+
+    def _create_two_batches(self, tmp):
+        rules1 = CheckRules(batch_name="batch-1", root_alias="t")
+        rules1.source_path = os.path.join(tmp, "r1.yaml")
+        state1 = BatchState.new(rules1, tmp)
+        state1.save(tmp)
+
+        rules2 = CheckRules(batch_name="batch-2", root_alias="t")
+        rules2.source_path = os.path.join(tmp, "r2.yaml")
+        state2 = BatchState.new(rules2, tmp)
+        state2.save(tmp)
+
+        return state1, state2
+
+    def test_compare_by_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._create_two_batches(tmp)
+            result = compare_by_source(tmp, "batch-1", "batch-2", "name", "name")
+            self.assertEqual(result.batch_a_name, "batch-1")
+            self.assertEqual(result.batch_b_name, "batch-2")
+
+    def test_compare_by_latest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._create_two_batches(tmp)
+            batches = list_batches(tmp)
+            # 按 list_batches 实际顺序：latest 1 是 batches[0]，latest 2 是 batches[1]
+            result = compare_by_source(tmp, "2", "1", "latest", "latest")
+            self.assertEqual(result.batch_a_name, batches[1]["batch_name"])
+            self.assertEqual(result.batch_b_name, batches[0]["batch_name"])
+
+    def test_compare_batch_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BatchNotFoundError):
+                compare_by_source(tmp, "no-such-batch", "batch-2", "name", "name")
+
+    def test_compare_latest_out_of_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._create_two_batches(tmp)
+            with self.assertRaises(BatchNotFoundError):
+                compare_by_source(tmp, "99", "1", "latest", "name")
+
+    def test_compare_no_batches_at_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BatchNotFoundError):
+                compare_by_source(tmp, "1", "2", "latest", "latest")
+
+
+class TestCompareCliEndToEnd(unittest.TestCase):
+    """CLI 端到端测试：用真实 subprocess 跑通所有场景。"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+    DATA_DIR = os.path.join(ROOT, "examples", "sample_data")
+
+    def _run_in(self, work_dir, *args):
+        import subprocess
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.path.join(self.ROOT, "src")
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["NO_COLOR"] = "1"
+        result = subprocess.run(
+            [sys.executable, "-m", "delivery_checker", *args],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=work_dir,
+        )
+        return result
+
+    def _create_rules_file(self, tmp, batch_name):
+        rules_path = os.path.join(tmp, f"rules_{batch_name}.yaml")
+        with open(rules_path, "w", encoding="utf-8") as f:
+            f.write(
+                f"batch_name: '{batch_name}'\n"
+                f"root_alias: 'test'\n"
+                f"required_files:\n"
+                f"  - 'README.md'\n"
+                f"  - 'docs/design.md'\n"
+                f"  - 'docs/**/*.md'\n"
+                f"ignore_patterns:\n"
+                f"  - '**/*.log'\n"
+            )
+        return rules_path
+
+    def _create_data_dir(self, tmp, variant=1):
+        data_dir = os.path.join(tmp, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(os.path.join(data_dir, "docs"), exist_ok=True)
+        with open(os.path.join(data_dir, "README.md"), "w") as f:
+            f.write("# Test")
+        with open(os.path.join(data_dir, "docs", "design.md"), "w") as f:
+            f.write("# Design")
+        if variant == 1:
+            # variant 1: 多一个 extra 文件（会被识别为 untracked）
+            with open(os.path.join(data_dir, "extra.txt"), "w") as f:
+                f.write("extra")
+        if variant == 2:
+            # variant 2: 多另一个 extra，且 docs 下多一个文件
+            with open(os.path.join(data_dir, "extra2.txt"), "w") as f:
+                f.write("extra2")
+            with open(os.path.join(data_dir, "docs", "api.md"), "w") as f:
+                f.write("# API")
+        return data_dir
+
+    def test_cli_compare_two_batches_by_name(self):
+        """用批次名称对比两个批次。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 创建 batch-a
+            rules_a = self._create_rules_file(tmp, "batch-a")
+            data_a = self._create_data_dir(tmp, variant=1)
+            r1 = self._run_in(tmp, "scan", rules_a, data_a)
+            self.assertEqual(r1.returncode, 0, f"scan a: {r1.stderr}")
+
+            # 创建 batch-b
+            rules_b = self._create_rules_file(tmp, "batch-b")
+            data_b = self._create_data_dir(tmp, variant=2)
+            r2 = self._run_in(tmp, "scan", rules_b, data_b)
+            self.assertEqual(r2.returncode, 0, f"scan b: {r2.stderr}")
+
+            # 对比
+            r_compare = self._run_in(tmp, "compare", "--a", "batch-a", "--b", "batch-b")
+            self.assertEqual(r_compare.returncode, 0,
+                             f"compare: {r_compare.stderr}\nstdout: {r_compare.stdout}")
+            self.assertIn("新增", r_compare.stdout)
+            self.assertIn("消失", r_compare.stdout)
+            self.assertIn("变化", r_compare.stdout)
+
+    def test_cli_compare_by_latest(self):
+        """用最近 N 次选择批次。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules1 = self._create_rules_file(tmp, "batch-1")
+            data1 = self._create_data_dir(tmp, variant=1)
+            self._run_in(tmp, "scan", rules1, data1)
+            rules2 = self._create_rules_file(tmp, "batch-2")
+            data2 = self._create_data_dir(tmp, variant=2)
+            self._run_in(tmp, "scan", rules2, data2)
+
+            # 最近第 2 个 (batch-1) 对比 最近第 1 个 (batch-2)
+            r = self._run_in(tmp, "compare", "--a-latest", "2", "--b-latest", "1")
+            self.assertEqual(r.returncode, 0, f"compare latest: {r.stderr}")
+            self.assertIn("batch-1", r.stdout)
+            self.assertIn("batch-2", r.stdout)
+
+    def test_cli_compare_save_config_and_reload(self):
+        """保存配置、模拟重启后读取、用配置运行对比。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules1 = self._create_rules_file(tmp, "batch-save-1")
+            data1 = self._create_data_dir(tmp, variant=1)
+            self._run_in(tmp, "scan", rules1, data1)
+            rules2 = self._create_rules_file(tmp, "batch-save-2")
+            data2 = self._create_data_dir(tmp, variant=2)
+            self._run_in(tmp, "scan", rules2, data2)
+
+            # 1. 保存配置
+            out_path = os.path.join(tmp, "diff.json")
+            r_save = self._run_in(
+                tmp, "compare-save",
+                "-n", "my-daily",
+                "-d", "每日例行对比",
+                "--a-latest", "2",
+                "--b-latest", "1",
+                "-f", "json",
+                "-o", out_path,
+                "-c", "rename",
+            )
+            self.assertEqual(r_save.returncode, 0, f"save: {r_save.stderr}")
+            self.assertIn("对比配置已保存", r_save.stdout)
+
+            # 2. 列出配置
+            r_list = self._run_in(tmp, "compare-list")
+            self.assertEqual(r_list.returncode, 0, f"list: {r_list.stderr}")
+            self.assertIn("my-daily", r_list.stdout)
+            self.assertIn("最近2", r_list.stdout)
+            self.assertIn("最近1", r_list.stdout)
+
+            # 3. 查看配置详情
+            r_show = self._run_in(tmp, "compare-show", "my-daily")
+            self.assertEqual(r_show.returncode, 0, f"show: {r_show.stderr}")
+            self.assertIn("my-daily", r_show.stdout)
+            self.assertIn("最近第 2 个批次", r_show.stdout)
+            self.assertIn("json", r_show.stdout)
+            self.assertIn("自动改名", r_show.stdout)
+
+            # 4. 模拟"重启"：用保存的配置运行对比
+            r_run = self._run_in(tmp, "compare-run", "my-daily")
+            self.assertEqual(r_run.returncode, 0,
+                             f"run: {r_run.stderr}\nstdout: {r_run.stdout}")
+            self.assertIn("使用配置「my-daily」", r_run.stdout)
+            self.assertIn("batch-save-1", r_run.stdout)
+            self.assertIn("batch-save-2", r_run.stdout)
+
+            # 5. 验证导出文件被创建
+            self.assertTrue(os.path.exists(out_path))
+
+    def test_cli_compare_export_conflict_strategies(self):
+        """导出冲突的三种策略。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules1 = self._create_rules_file(tmp, "batch-c1")
+            data1 = self._create_data_dir(tmp, variant=1)
+            self._run_in(tmp, "scan", rules1, data1)
+            rules2 = self._create_rules_file(tmp, "batch-c2")
+            data2 = self._create_data_dir(tmp, variant=2)
+            self._run_in(tmp, "scan", rules2, data2)
+
+            out_path = os.path.join(tmp, "conflict_test.json")
+            with open(out_path, "w") as f:
+                f.write("original content")
+
+            # 1. refuse 策略：拒绝并返回 3
+            r_refuse = self._run_in(
+                tmp, "compare",
+                "--a", "batch-c1", "--b", "batch-c2",
+                "-o", out_path, "-c", "refuse",
+            )
+            self.assertEqual(r_refuse.returncode, 3, f"refuse: {r_refuse.stderr}")
+            self.assertIn("导出冲突", r_refuse.stderr)
+            with open(out_path, "r") as f:
+                self.assertEqual(f.read(), "original content")
+
+            # 2. rename 策略：自动改名，原文件保留
+            r_rename = self._run_in(
+                tmp, "compare",
+                "--a", "batch-c1", "--b", "batch-c2",
+                "-o", out_path, "-c", "rename",
+            )
+            self.assertEqual(r_rename.returncode, 0,
+                             f"rename: {r_rename.stderr}\nstdout: {r_rename.stdout}")
+            self.assertIn("已导出", r_rename.stdout)
+            with open(out_path, "r") as f:
+                self.assertEqual(f.read(), "original content")
+            # 找到自动改名的文件
+            renamed = out_path.replace(".json", "_1.json")
+            self.assertTrue(os.path.exists(renamed))
+
+            # 3. overwrite 策略：覆盖原文件
+            r_overwrite = self._run_in(
+                tmp, "compare",
+                "--a", "batch-c1", "--b", "batch-c2",
+                "-o", out_path, "-c", "overwrite",
+            )
+            self.assertEqual(r_overwrite.returncode, 0,
+                             f"overwrite: {r_overwrite.stderr}")
+            with open(out_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertIn("batch_a", data)
+
+    def test_cli_compare_batch_not_found_exit_1(self):
+        """对比不存在的批次返回 1。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run_in(tmp, "compare", "--a", "no-batch", "--b", "no-batch-2")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("批次不存在", r.stderr)
+
+    def test_cli_compare_config_corrupted_exit_2(self):
+        """配置损坏时返回 2。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 先保存一个好的配置
+            rules1 = self._create_rules_file(tmp, "batch-x1")
+            data1 = self._create_data_dir(tmp, variant=1)
+            self._run_in(tmp, "scan", rules1, data1)
+            rules2 = self._create_rules_file(tmp, "batch-x2")
+            data2 = self._create_data_dir(tmp, variant=2)
+            self._run_in(tmp, "scan", rules2, data2)
+            self._run_in(
+                tmp, "compare-save", "-n", "corrupt-test",
+                "--a-latest", "2", "--b-latest", "1"
+            )
+
+            # 破坏配置文件
+            cfg_dir = os.path.join(tmp, ".delivery_check", "compare_configs")
+            cfg_path = os.path.join(cfg_dir, "corrupt-test.compare.json")
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                f.write("{ this is not json !!!")
+
+            # compare-show 应返回 2
+            r_show = self._run_in(tmp, "compare-show", "corrupt-test")
+            self.assertEqual(r_show.returncode, 2, f"show bad: {r_show.stderr}")
+            self.assertIn("损坏", r_show.stderr)
+
+            # compare-run 也应返回 2
+            r_run = self._run_in(tmp, "compare-run", "corrupt-test")
+            self.assertEqual(r_run.returncode, 2, f"run bad: {r_run.stderr}")
+            self.assertIn("损坏", r_run.stderr)
+
+    def test_cli_compare_does_not_modify_batches(self):
+        """对比操作绝不修改原批次、撤销栈或规则包索引。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 先创建批次并标记一些问题
+            rules = self._create_rules_file(tmp, "batch-immutable")
+            data = self._create_data_dir(tmp, variant=1)
+            self._run_in(tmp, "scan", rules, data)
+
+            # 标记一些问题，产生撤销栈
+            self._run_in(tmp, "mark", "batch-immutable", "passed",
+                         "--ids", "1", "-r", "tester", "-n", "test")
+
+            # 记录对比前的状态文件哈希
+            state_file = os.path.join(tmp, ".delivery_check",
+                                      "batch-immutable.state.json")
+            with open(state_file, "rb") as f:
+                before_hash = hashlib.sha256(f.read()).hexdigest()
+
+            # 创建另一个批次用于对比
+            rules2 = self._create_rules_file(tmp, "batch-other")
+            data2 = self._create_data_dir(tmp, variant=2)
+            self._run_in(tmp, "scan", rules2, data2)
+
+            # 运行对比
+            self._run_in(tmp, "compare",
+                         "--a", "batch-immutable",
+                         "--b", "batch-other")
+
+            # 验证原批次未被修改
+            with open(state_file, "rb") as f:
+                after_hash = hashlib.sha256(f.read()).hexdigest()
+            self.assertEqual(before_hash, after_hash,
+                             "对比操作修改了原批次状态文件！")
+
+            # 重新加载验证撤销栈完整
+            state = BatchState.load(tmp, "batch-immutable")
+            self.assertGreaterEqual(len(state.undo_stack), 1)
+
+    def test_cli_compare_in_work_dir_with_path_spaces(self):
+        """测试工作目录和路径含空格/中文等异常路径场景。"""
+        with tempfile.TemporaryDirectory() as tmp_root:
+            work_dir = os.path.join(tmp_root, "我的 工作目录 空格")
+            os.makedirs(work_dir)
+
+            rules = self._create_rules_file(work_dir, "路径测试批次")
+            data_dir = os.path.join(work_dir, "数据 目录")
+            os.makedirs(data_dir)
+            os.makedirs(os.path.join(data_dir, "docs"))
+            with open(os.path.join(data_dir, "README.md"), "w") as f:
+                f.write("# test")
+            with open(os.path.join(data_dir, "docs", "design.md"), "w") as f:
+                f.write("# design")
+
+            # 扫描两个批次
+            r1 = self._run_in(work_dir, "scan", rules, data_dir)
+            self.assertEqual(r1.returncode, 0, f"scan 1: {r1.stderr}")
+
+            # 修改目录产生差异
+            with open(os.path.join(data_dir, "extra file.txt"), "w") as f:
+                f.write("extra")
+            rules2 = self._create_rules_file(work_dir, "路径测试批次 2")
+            r2 = self._run_in(work_dir, "scan", rules2, data_dir)
+            self.assertEqual(r2.returncode, 0, f"scan 2: {r2.stderr}")
+
+            # 对比
+            out_path = os.path.join(work_dir, "对比 结果.json")
+            r_compare = self._run_in(
+                work_dir, "compare",
+                "--a", "路径测试批次",
+                "--b", "路径测试批次 2",
+                "-o", out_path, "-c", "overwrite",
+            )
+            self.assertEqual(r_compare.returncode, 0,
+                             f"compare path: {r_compare.stderr}\nstdout: {r_compare.stdout}")
+            self.assertTrue(os.path.exists(out_path))
+
+    def test_cli_compare_export_csv(self):
+        """导出 CSV 格式。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules1 = self._create_rules_file(tmp, "csv-batch-1")
+            data1 = self._create_data_dir(tmp, variant=1)
+            self._run_in(tmp, "scan", rules1, data1)
+            rules2 = self._create_rules_file(tmp, "csv-batch-2")
+            data2 = self._create_data_dir(tmp, variant=2)
+            self._run_in(tmp, "scan", rules2, data2)
+
+            out_path = os.path.join(tmp, "diff.csv")
+            r = self._run_in(
+                tmp, "compare",
+                "--a", "csv-batch-1", "--b", "csv-batch-2",
+                "-o", out_path, "-f", "csv",
+            )
+            self.assertEqual(r.returncode, 0, f"csv export: {r.stderr}")
+            self.assertTrue(os.path.exists(out_path))
+            with open(out_path, "r", encoding="utf-8-sig") as f:
+                header = f.readline()
+            self.assertIn("差异类型", header)
+            self.assertIn("匹配键", header)
 
 
 if __name__ == "__main__":

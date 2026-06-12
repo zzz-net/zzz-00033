@@ -48,6 +48,22 @@ from .view_preset import (
     list_view_presets,
     save_view_preset,
 )
+from .compare import (
+    CompareConfig,
+    CompareConfigConflictError,
+    CompareConfigError,
+    CompareConfigNotFoundError,
+    CompareError,
+    BatchNotFoundError,
+    ExportConflictError,
+    ExportPermissionError,
+    compare_by_source,
+    delete_compare_config,
+    export_compare_result,
+    get_compare_config,
+    list_compare_configs,
+    save_compare_config,
+)
 
 
 C_RESET = "\033[0m"
@@ -961,6 +977,352 @@ def cmd_preset_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_source_args(args, prefix: str) -> tuple[str, str]:
+    """解析 --a/--a-latest / --b/--b-latest 参数，返回 (source, source_type)。"""
+    name_val = getattr(args, f"{prefix}", None)
+    latest_val = getattr(args, f"{prefix}_latest", None)
+    if latest_val is not None:
+        return (str(latest_val), "latest")
+    if name_val:
+        return (name_val, "name")
+    return ("", "name")
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+
+    source_a, type_a = _resolve_source_args(args, "a")
+    source_b, type_b = _resolve_source_args(args, "b")
+
+    if (not source_a) or (not source_b):
+        print(_color("❌ 请指定两个对比来源：--a <批次名> 或 --a-latest N，同理 --b",
+                     C_RED, color), file=sys.stderr)
+        return 1
+
+    try:
+        result = compare_by_source(base_dir, source_a, source_b, type_a, type_b)
+    except BatchNotFoundError as e:
+        print(_color(f"❌ 批次不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except CompareConfigError as e:
+        print(_color(f"❌ 配置错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except CompareError as e:
+        print(_color(f"❌ 对比失败: {e}", C_RED, color), file=sys.stderr)
+        return 2
+
+    summary = result.summary()
+    print(_color(f"📊 批次对比结果", C_BOLD, color))
+    print(f"   批次 A: {_color(result.batch_a_name, C_CYAN, color)}"
+          f"  ({result.batch_a_updated_at or '未知时间'})")
+    print(f"   批次 B: {_color(result.batch_b_name, C_CYAN, color)}"
+          f"  ({result.batch_b_updated_at or '未知时间'})")
+    print()
+    print(_color("📈 差异汇总:", C_BOLD, color))
+    print(f"   {_color('新增', C_GREEN, color)}: {summary['added']}  "
+          f"{_color('消失', C_RED, color)}: {summary['removed']}  "
+          f"{_color('变化', C_YELLOW, color)}: {summary['changed']}  "
+          f"{_color('未变', C_GRAY, color)}: {summary['unchanged']}")
+    if summary['changed'] > 0:
+        parts = []
+        if summary['status_changed']:
+            parts.append(f"状态变化: {summary['status_changed']}")
+        if summary['reviewer_changed']:
+            parts.append(f"处理人变化: {summary['reviewer_changed']}")
+        if summary['type_changed']:
+            parts.append(f"类型变化: {summary['type_changed']}")
+        if summary['message_changed']:
+            parts.append(f"描述变化: {summary['message_changed']}")
+        if parts:
+            print(f"   {_color(' | '.join(parts), C_GRAY, color)}")
+    print()
+
+    if result.added:
+        print(_color("➕ 新增问题（B 有、A 无）:", C_GREEN, color))
+        for issue in result.added:
+            type_label = ISSUE_TYPE_LABELS.get(issue.type, issue.type.value)
+            status_label = REVIEW_STATUS_LABELS.get(issue.status, issue.status.value)
+            print(f"   [{type_label}] {issue.path} - {issue.message} ({status_label})")
+        print()
+
+    if result.removed:
+        print(_color("➖ 消失问题（A 有、B 无）:", C_RED, color))
+        for issue in result.removed:
+            type_label = ISSUE_TYPE_LABELS.get(issue.type, issue.type.value)
+            status_label = REVIEW_STATUS_LABELS.get(issue.status, issue.status.value)
+            print(f"   [{type_label}] {issue.path} - {issue.message} ({status_label})")
+        print()
+
+    if result.changed:
+        print(_color("🔄 变化问题:", C_YELLOW, color))
+        for ch in result.changed:
+            old = ch.old_issue
+            new = ch.new_issue
+            changes_str = ",".join(ch.change_types)
+            path = new.path if new else (old.path if old else "")
+            print(f"   {path}")
+            print(f"     变化字段: {_color(changes_str, C_CYAN, color)}")
+            if old and new:
+                old_status = REVIEW_STATUS_LABELS.get(old.status, old.status.value)
+                new_status = REVIEW_STATUS_LABELS.get(new.status, new.status.value)
+                if old_status != new_status:
+                    print(f"     状态: {old_status} → {new_status}")
+                old_reviewer = old.reviewer or "(无)"
+                new_reviewer = new.reviewer or "(无)"
+                if old_reviewer != new_reviewer:
+                    print(f"     处理人: {old_reviewer} → {new_reviewer}")
+        print()
+
+    output = getattr(args, "output", None)
+    fmt = getattr(args, "format", "auto") or "auto"
+    conflict = getattr(args, "conflict", "rename") or "rename"
+    if output:
+        try:
+            saved = export_compare_result(result, output, fmt, conflict)
+            print(_color(f"📄 对比结果已导出: {saved}", C_GREEN, color))
+        except ExportConflictError as e:
+            print(_color(f"⚠️  导出冲突: {e}", C_YELLOW, color), file=sys.stderr)
+            return 3
+        except ExportPermissionError as e:
+            print(_color(f"❌ 导出权限错误: {e}", C_RED, color), file=sys.stderr)
+            return 4
+        except CompareError as e:
+            print(_color(f"❌ 导出失败: {e}", C_RED, color), file=sys.stderr)
+            return 2
+
+    cfg_name = getattr(args, "save_config", None)
+    if cfg_name:
+        try:
+            cfg = save_compare_config(
+                base_dir=base_dir,
+                name=cfg_name,
+                description=getattr(args, "config_description", "") or "",
+                source_a=source_a,
+                source_b=source_b,
+                source_a_type=type_a,
+                source_b_type=type_b,
+                export_format=fmt if fmt != "auto" else "json",
+                export_path=output or "",
+                conflict_strategy=conflict,
+                force=getattr(args, "force", False),
+            )
+            print(_color(f"✅ 对比配置已保存: {cfg.name}", C_GREEN, color))
+        except CompareConfigConflictError as e:
+            print(_color(f"⚠️  {e}", C_YELLOW, color), file=sys.stderr)
+            return 3
+        except CompareConfigError as e:
+            print(_color(f"❌ 保存配置失败: {e}", C_RED, color), file=sys.stderr)
+            return 2
+
+    return 0
+
+
+def cmd_compare_run(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    cfg_name = args.name
+
+    try:
+        cfg = get_compare_config(base_dir, cfg_name)
+    except CompareConfigNotFoundError as e:
+        print(_color(f"❌ 对比配置不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except CompareConfigError as e:
+        print(_color(f"❌ 对比配置损坏: {e}", C_RED, color), file=sys.stderr)
+        return 2
+
+    output = getattr(args, "output", None) or cfg.export_path
+    fmt = getattr(args, "format", None) or cfg.export_format or "auto"
+    conflict = getattr(args, "conflict", None) or cfg.conflict_strategy or "rename"
+
+    override_a = getattr(args, "a", None)
+    override_a_latest = getattr(args, "a_latest", None)
+    override_b = getattr(args, "b", None)
+    override_b_latest = getattr(args, "b_latest", None)
+
+    if override_a is not None:
+        source_a, type_a = override_a, "name"
+    elif override_a_latest is not None:
+        source_a, type_a = str(override_a_latest), "latest"
+    else:
+        source_a, type_a = cfg.source_a, cfg.source_a_type
+
+    if override_b is not None:
+        source_b, type_b = override_b, "name"
+    elif override_b_latest is not None:
+        source_b, type_b = str(override_b_latest), "latest"
+    else:
+        source_b, type_b = cfg.source_b, cfg.source_b_type
+
+    if (not source_a) or (not source_b):
+        print(_color("❌ 配置中缺少来源信息，请在保存时指定或运行时通过 --a/--b 覆盖",
+                     C_RED, color), file=sys.stderr)
+        return 1
+
+    try:
+        result = compare_by_source(base_dir, source_a, source_b, type_a, type_b)
+    except BatchNotFoundError as e:
+        print(_color(f"❌ 批次不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except CompareError as e:
+        print(_color(f"❌ 对比失败: {e}", C_RED, color), file=sys.stderr)
+        return 2
+
+    summary = result.summary()
+    print(_color(f"📊 批次对比结果（使用配置「{cfg.name}」）", C_BOLD, color))
+    print(f"   批次 A: {_color(result.batch_a_name, C_CYAN, color)}"
+          f"  ({result.batch_a_updated_at or '未知时间'})")
+    print(f"   批次 B: {_color(result.batch_b_name, C_CYAN, color)}"
+          f"  ({result.batch_b_updated_at or '未知时间'})")
+    print(f"   {_color('新增', C_GREEN, color)}: {summary['added']}  "
+          f"{_color('消失', C_RED, color)}: {summary['removed']}  "
+          f"{_color('变化', C_YELLOW, color)}: {summary['changed']}  "
+          f"{_color('未变', C_GRAY, color)}: {summary['unchanged']}")
+
+    if output:
+        try:
+            saved = export_compare_result(result, output, fmt, conflict)
+            print(_color(f"📄 对比结果已导出: {saved}", C_GREEN, color))
+        except ExportConflictError as e:
+            print(_color(f"⚠️  导出冲突: {e}", C_YELLOW, color), file=sys.stderr)
+            return 3
+        except ExportPermissionError as e:
+            print(_color(f"❌ 导出权限错误: {e}", C_RED, color), file=sys.stderr)
+            return 4
+        except CompareError as e:
+            print(_color(f"❌ 导出失败: {e}", C_RED, color), file=sys.stderr)
+            return 2
+
+    return 0
+
+
+def cmd_compare_save(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    source_a, type_a = _resolve_source_args(args, "a")
+    source_b, type_b = _resolve_source_args(args, "b")
+
+    try:
+        cfg = save_compare_config(
+            base_dir=base_dir,
+            name=args.name,
+            description=getattr(args, "description", "") or "",
+            source_a=source_a,
+            source_b=source_b,
+            source_a_type=type_a,
+            source_b_type=type_b,
+            export_format=getattr(args, "format", "json") or "json",
+            export_path=getattr(args, "output", "") or "",
+            conflict_strategy=getattr(args, "conflict", "rename") or "rename",
+            force=getattr(args, "force", False),
+        )
+    except CompareConfigConflictError as e:
+        print(_color(f"⚠️  {e}", C_YELLOW, color), file=sys.stderr)
+        return 3
+    except CompareConfigError as e:
+        print(_color(f"❌ 保存配置失败: {e}", C_RED, color), file=sys.stderr)
+        return 2
+
+    print(_color(f"✅ 对比配置已保存", C_GREEN, color))
+    print(f"   名称: {_color(cfg.name, C_BOLD, color)}")
+    if cfg.description:
+        print(f"   说明: {cfg.description}")
+    if cfg.source_a:
+        label_a = f"最近第 {cfg.source_a} 个" if cfg.source_a_type == "latest" else cfg.source_a
+        label_b = f"最近第 {cfg.source_b} 个" if cfg.source_b_type == "latest" else cfg.source_b
+        print(f"   来源 A: {label_a}")
+        print(f"   来源 B: {label_b}")
+    if cfg.export_format:
+        print(f"   默认导出格式: {cfg.export_format}")
+    if cfg.export_path:
+        print(f"   默认导出路径: {cfg.export_path}")
+    if cfg.conflict_strategy:
+        strategy_label = {"overwrite": "覆盖", "rename": "自动改名", "refuse": "拒绝"}.get(
+            cfg.conflict_strategy, cfg.conflict_strategy
+        )
+        print(f"   文件冲突策略: {strategy_label}")
+    return 0
+
+
+def cmd_compare_list(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        configs = list_compare_configs(base_dir)
+    except CompareConfigError as e:
+        print(_color(f"❌ 读取配置索引失败: {e}", C_RED, color), file=sys.stderr)
+        return 2
+
+    if not configs:
+        print(_color("（暂无对比配置）", C_GRAY, color))
+        print(_color("使用 compare-save 子命令创建第一个对比配置", C_GRAY, color))
+        return 0
+
+    print(_color(f"{'#':>3}  {'名称':<20}  {'A来源':<14}  {'B来源':<14}  说明", C_BOLD, color))
+    print(_color("-" * 90, C_GRAY, color))
+    for idx, cfg in enumerate(configs, 1):
+        name = _color(cfg["name"][:20], C_CYAN, color)
+        src_a = (f"最近{cfg['source_a']}" if cfg.get("source_a_type") == "latest"
+                 else (cfg.get("source_a", "") or ""))[:14]
+        src_b = (f"最近{cfg['source_b']}" if cfg.get("source_b_type") == "latest"
+                 else (cfg.get("source_b", "") or ""))[:14]
+        desc = cfg.get("description", "")
+        print(f"{idx:>3}  {name:<20}  {src_a:<14}  {src_b:<14}  {desc}")
+        if cfg.get("updated_at"):
+            print(f"     {_color('更新: ' + cfg['updated_at'], C_GRAY, color)}")
+    return 0
+
+
+def cmd_compare_show(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        cfg = get_compare_config(base_dir, args.name)
+    except CompareConfigNotFoundError as e:
+        print(_color(f"❌ 对比配置不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except CompareConfigError as e:
+        print(_color(f"❌ 对比配置损坏: {e}", C_RED, color), file=sys.stderr)
+        return 2
+
+    print(_color(f"📋 对比配置「{cfg.name}」详情", C_BOLD, color))
+    if cfg.description:
+        print(f"  说明: {cfg.description}")
+    if cfg.source_a:
+        label_a = f"最近第 {cfg.source_a} 个批次" if cfg.source_a_type == "latest" else cfg.source_a
+        label_b = f"最近第 {cfg.source_b} 个批次" if cfg.source_b_type == "latest" else cfg.source_b
+        print(f"  来源 A: {label_a}")
+        print(f"  来源 B: {label_b}")
+    if cfg.export_format:
+        print(f"  默认导出格式: {cfg.export_format}")
+    if cfg.export_path:
+        print(f"  默认导出路径: {cfg.export_path}")
+    if cfg.conflict_strategy:
+        strategy_label = {"overwrite": "覆盖", "rename": "自动改名", "refuse": "拒绝"}.get(
+            cfg.conflict_strategy, cfg.conflict_strategy
+        )
+        print(f"  文件冲突策略: {strategy_label}")
+    print(f"  创建时间: {cfg.created_at}")
+    print(f"  更新时间: {cfg.updated_at}")
+    return 0
+
+
+def cmd_compare_delete(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        delete_compare_config(base_dir, args.name)
+    except CompareConfigNotFoundError as e:
+        print(_color(f"❌ 对比配置不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except CompareConfigError as e:
+        print(_color(f"❌ 删除失败: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    print(_color(f"✅ 已删除对比配置: {args.name}", C_GREEN, color))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="delivery-checker",
@@ -1093,6 +1455,61 @@ def build_parser() -> argparse.ArgumentParser:
                                  help="强制覆盖已存在的同名预设")
     p_preset_import.add_argument("--rename-name", "-N", help="重命名导入的预设名称")
     p_preset_import.set_defaults(func=cmd_preset_import)
+
+    p_compare = sub.add_parser("compare", help="对比两个批次的差异（新增/消失/状态/处理人变化）")
+    p_compare.add_argument("--a", help="批次 A 的名称（与 --a-latest 二选一）")
+    p_compare.add_argument("--a-latest", type=int, help="批次 A 选最近第 N 个（1=最新）")
+    p_compare.add_argument("--b", help="批次 B 的名称（与 --b-latest 二选一）")
+    p_compare.add_argument("--b-latest", type=int, help="批次 B 选最近第 N 个（1=最新）")
+    p_compare.add_argument("--output", "-o", help="导出结果文件路径")
+    p_compare.add_argument("--format", "-f", choices=["json", "csv", "auto"], default="auto",
+                           help="导出格式（默认根据扩展名自动判断）")
+    p_compare.add_argument("--conflict", "-c", choices=["overwrite", "rename", "refuse"],
+                           default="rename",
+                           help="导出文件已存在时的处理策略（默认 rename 自动改名）")
+    p_compare.add_argument("--save-config", "-s", help="同时将当前对比选项保存为命名配置")
+    p_compare.add_argument("--config-description", "-d", default="", help="配置说明（配合 --save-config）")
+    p_compare.add_argument("--force", action="store_true", help="保存配置时强制覆盖同名")
+    p_compare.set_defaults(func=cmd_compare)
+
+    p_compare_run = sub.add_parser("compare-run", help="按已保存的命名配置运行批次对比")
+    p_compare_run.add_argument("name", help="对比配置名称")
+    p_compare_run.add_argument("--a", help="覆盖批次 A 名称")
+    p_compare_run.add_argument("--a-latest", type=int, help="覆盖批次 A 为最近第 N 个")
+    p_compare_run.add_argument("--b", help="覆盖批次 B 名称")
+    p_compare_run.add_argument("--b-latest", type=int, help="覆盖批次 B 为最近第 N 个")
+    p_compare_run.add_argument("--output", "-o", help="覆盖导出结果文件路径")
+    p_compare_run.add_argument("--format", "-f", choices=["json", "csv", "auto"],
+                               help="覆盖导出格式")
+    p_compare_run.add_argument("--conflict", "-c", choices=["overwrite", "rename", "refuse"],
+                               help="覆盖冲突处理策略")
+    p_compare_run.set_defaults(func=cmd_compare_run)
+
+    p_compare_save = sub.add_parser("compare-save", help="将对比选项保存为可复用命名配置")
+    p_compare_save.add_argument("--name", "-n", required=True, help="配置名称")
+    p_compare_save.add_argument("--description", "-d", default="", help="配置说明")
+    p_compare_save.add_argument("--a", help="批次 A 名称")
+    p_compare_save.add_argument("--a-latest", type=int, help="批次 A 选最近第 N 个")
+    p_compare_save.add_argument("--b", help="批次 B 名称")
+    p_compare_save.add_argument("--b-latest", type=int, help="批次 B 选最近第 N 个")
+    p_compare_save.add_argument("--format", "-f", choices=["json", "csv"], default="json",
+                                help="默认导出格式")
+    p_compare_save.add_argument("--output", "-o", default="", help="默认导出路径")
+    p_compare_save.add_argument("--conflict", "-c", choices=["overwrite", "rename", "refuse"],
+                                default="rename", help="默认冲突策略")
+    p_compare_save.add_argument("--force", action="store_true", help="强制覆盖同名配置")
+    p_compare_save.set_defaults(func=cmd_compare_save)
+
+    p_compare_list = sub.add_parser("compare-list", help="列出所有已保存的对比配置")
+    p_compare_list.set_defaults(func=cmd_compare_list)
+
+    p_compare_show = sub.add_parser("compare-show", help="查看指定对比配置的详细内容")
+    p_compare_show.add_argument("name", help="配置名称")
+    p_compare_show.set_defaults(func=cmd_compare_show)
+
+    p_compare_delete = sub.add_parser("compare-delete", help="删除指定对比配置")
+    p_compare_delete.add_argument("name", help="配置名称")
+    p_compare_delete.set_defaults(func=cmd_compare_delete)
 
     return parser
 

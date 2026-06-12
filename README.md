@@ -491,6 +491,307 @@ dc.bat preset-import missing-first.preset.json -f
 
 ---
 
+## 📊 批次对比（跨 scan / review 看差异）
+
+把两次 `scan` 或 `review` 后的结果拉出来对比，看**新增、消失、状态变化、处理人变化、规则命中变化**，追踪资料包在不同版本之间的演进。
+
+### 匹配口径（稳定、可预期）
+
+同一条记录在不同批次中会被稳定地匹配，以下差异都会被**正确合并**：
+- **路径大小写**：`README.md` ≡ `readme.md` ≡ `README.MD`
+- **相对/绝对路径**：`./docs/design.md` ≡ `D:\pkg\docs\design.md`
+- **路径分隔符**：`docs\design.md` ≡ `docs/design.md`
+- **重复文件**：同一 `group_key` 的重复文件按组匹配（与路径无关）
+- 两条记录的 `type + 标准化路径` 一致即视为同一问题（或 `type + group_key` 对于重复文件）
+
+### 差异类型
+
+| 差异类型 | 含义 |
+|---------|------|
+| ➕ **新增** | 批次 B 有、批次 A 没有的问题 |
+| ➖ **消失** | 批次 A 有、批次 B 没有的问题（已修复或删除） |
+| 🔄 **变化** | 两批次都存在，但内容有变化 |
+| 🟰 **未变** | 两批次中完全一致 |
+
+变化会进一步细分：
+- `status`：复核状态变化（待复核 → 已通过等）
+- `reviewer`：处理人变化
+- `type`：问题类型变化
+- `message`：问题描述变化
+- `note`：复核备注变化
+- `detail`：详细信息变化
+
+---
+
+### 快速上手
+
+#### ① 按批次名称对比
+
+```bash
+# 对比 batch-v1 和 batch-v2
+dc compare --a batch-v1 --b batch-v2
+```
+
+输出示例：
+```
+📊 批次对比结果
+   批次 A: batch-v1  (2026-06-10T10:30:00)
+   批次 B: batch-v2  (2026-06-12T14:20:00)
+
+📈 差异汇总:
+   新增: 2  消失: 1  变化: 3  未变: 15
+   状态变化: 2 | 处理人变化: 1
+
+➕ 新增问题（B 有、A 无）:
+   [缺失必备] docs/api.md - 必交付文档不存在 (待复核)
+   [未跟踪文件] temp/debug.log - 工作区外文件 (待复核)
+
+➖ 消失问题（A 有、B 无）:
+   [缺失必备] CHANGELOG.md - 必交付文档不存在 (已通过)
+
+🔄 变化问题:
+   src/config.yaml
+     变化字段: status,reviewer
+     状态: 待复核 → 已通过
+     处理人: (无) → 李工
+```
+
+#### ② 用「最近 N 次」选择批次
+
+不用记批次名，直接对比最近两次扫描：
+
+```bash
+# 最近第 2 个 vs 最近第 1 个（默认最新）
+dc compare --a-latest 2 --b-latest 1
+
+# 简写：对比前两个（上一次 vs 最新）
+dc compare --a-latest 2 --b-latest 1
+```
+
+---
+
+### 保存对比配置（可复用）
+
+经常对比的两个批次可以存成**命名配置**，一键运行，跨重启依然可用。
+
+#### 保存配置
+
+```bash
+# 保存为 "每日对比" 配置
+dc compare-save -n "每日对比" -d "例行每日两次扫描对比" \
+    --a-latest 2 --b-latest 1 \
+    -f json -o ./daily_diff.json -c rename
+```
+
+参数说明：
+| 参数 | 说明 |
+|-----|------|
+| `-n, --name` | 配置名称（必填） |
+| `-d, --description` | 配置说明 |
+| `--a / --a-latest N` | 批次 A：名称或最近第 N 个 |
+| `--b / --b-latest N` | 批次 B：名称或最近第 N 个 |
+| `-f, --format` | 默认导出格式：`json` / `csv` |
+| `-o, --output` | 默认导出路径 |
+| `-c, --conflict` | 文件冲突策略：`rename` / `overwrite` / `refuse` |
+| `--force` | 强制覆盖同名配置 |
+
+#### 用保存的配置运行对比
+
+```bash
+# 直接按配置运行
+dc compare-run "每日对比"
+
+# 运行时覆盖部分参数（CLI 优先）
+dc compare-run "每日对比" -o ./today_diff.json -c overwrite
+```
+
+#### 配置管理
+
+```bash
+# 列出所有对比配置
+dc compare-list
+
+# 查看配置详情
+dc compare-show "每日对比"
+
+# 删除配置
+dc compare-delete "每日对比"
+```
+
+#### 配置文件结构
+
+```
+.delivery_check/
+└── compare_configs/
+    ├── index.json                 # 持久化索引（原子写入）
+    └── 每日对比.compare.json       # 配置本体
+```
+
+- 配置文件都是原子写入（先写 tmp → move 替换）
+- **绝不改动**原批次状态文件、撤销栈、规则包索引
+- 重启后配置依然存在
+
+---
+
+### 导出对比结果（JSON / CSV）
+
+#### 直接导出
+
+```bash
+# 对比并导出 JSON（扩展名自动识别）
+dc compare --a batch-v1 --b batch-v2 -o ./diff.json
+
+# 对比并导出 CSV
+dc compare --a batch-v1 --b batch-v2 -o ./diff.csv
+
+# 显式指定格式
+dc compare --a batch-v1 --b batch-v2 -o ./diff -f csv
+```
+
+#### 文件冲突处理
+
+导出文件已存在时，用 `-c, --conflict` 选择处理策略：
+
+```bash
+# ① 拒绝：报错退出，不修改任何文件（默认策略）
+dc compare --a batch-v1 --b batch-v2 -o ./diff.json -c refuse
+# ⚠️  导出冲突: 导出文件已存在（拒绝覆盖）: .../diff.json
+# 退出码: 3
+
+# ② 自动改名：生成 diff_1.json、diff_2.json...（推荐）
+dc compare --a batch-v1 --b batch-v2 -o ./diff.json -c rename
+# 📄 对比结果已导出: ./diff_1.json
+# 退出码: 0
+
+# ③ 覆盖：直接覆盖原文件
+dc compare --a batch-v1 --b batch-v2 -o ./diff.json -c overwrite
+# 📄 对比结果已导出: ./diff.json
+# 退出码: 0
+```
+
+#### JSON 导出结构
+
+```json
+{
+  "batch_a": {"name": "batch-v1", "updated_at": "2026-06-10T10:30:00"},
+  "batch_b": {"name": "batch-v2", "updated_at": "2026-06-12T14:20:00"},
+  "compared_at": "2026-06-12T15:00:00",
+  "summary": {
+    "added": 2, "removed": 1, "changed": 3, "unchanged": 15,
+    "status_changed": 2, "reviewer_changed": 1,
+    "type_changed": 0, "message_changed": 1
+  },
+  "added": [/* 新增的问题列表 */],
+  "removed": [/* 消失的问题列表 */],
+  "changed": [
+    {
+      "match_key": "missing::path::src/config.yaml",
+      "change_types": ["status", "reviewer"],
+      "old": {/* 批次 A 中的问题 */},
+      "new": {/* 批次 B 中的问题 */}
+    }
+  ],
+  "unchanged": [/* 未变化的问题列表 */]
+}
+```
+
+#### CSV 导出结构
+
+| 差异类型 | 匹配键 | 旧类型 | 新类型 | 旧路径 | 新路径 | 旧状态 | 新状态 | 旧处理人 | 新处理人 | 旧描述 | 新描述 | 变化字段 |
+|---------|-------|-------|-------|-------|-------|-------|-------|---------|---------|-------|-------|---------|
+| 新增 | ... | | 缺失必备 | | docs/api.md | | 待复核 | | | | 必交付文档不存在 | |
+| 消失 | ... | 缺失必备 | | CHANGELOG.md | | 已通过 | | 张工 | | 必交付文档不存在 | | |
+| 变化 | missing::path::src/config.yaml | 缺失必备 | 缺失必备 | src/config.yaml | src/config.yaml | 待复核 | 已通过 | (无) | 李工 | 缺失 | 缺失 | status,reviewer |
+
+---
+
+### 错误码与边界处理
+
+| 退出码 | 场景 | 示例 |
+|-------|------|------|
+| **0** | 成功 | 对比完成 / 配置保存成功 / 导出成功 |
+| **1** | 批次不存在 / 配置不存在 | `dc compare --a no-such-batch --b batch-v2` → 批次不存在 |
+| **2** | 配置损坏 / 格式错误 / 权限错误 | 配置 JSON 损坏、目标目录无写权限 |
+| **3** | 导出文件已存在（拒绝策略） / 配置同名冲突 | `-c refuse` 时文件已存在 |
+
+#### 典型场景示例
+
+```bash
+# 场景 1：批次不存在
+dc compare --a no-batch --b batch-v2
+# ❌ 批次不存在: 批次 no-batch 不存在
+# 退出码: 1
+
+# 场景 2：目标目录无写权限
+dc compare --a batch-v1 --b batch-v2 -o /protected/diff.json
+# ❌ 导出权限错误: 目标目录无写权限: /protected
+# 退出码: 4
+
+# 场景 3：配置文件损坏
+echo "this is not json" > .delivery_check/compare_configs/bad.compare.json
+dc compare-show bad
+# ❌ 对比配置损坏: 对比配置文件损坏（JSON 解析失败）
+# 退出码: 2
+
+# 场景 4：配置同名（不加 -f）
+dc compare-save -n "每日对比" --a batch-v1 --b batch-v2
+# ⚠️  对比配置「每日对比」已存在，加 -f 覆盖或换名称
+# 退出码: 3
+```
+
+> **重要保证**：对比操作是**只读**的，**绝不会修改原批次、撤销栈或规则包索引**。即使对比过程中出错，已有批次数据完整无损。
+
+---
+
+### 常用工作流示例
+
+#### 工作流 1：每日版本对比
+
+```bash
+# 早上扫描一次
+dc scan rules.yaml ./pkg_v1 --name morning-scan
+
+# 下午扫描一次
+dc scan rules.yaml ./pkg_v2 --name afternoon-scan
+
+# 对比看差异并保存配置
+dc compare --a morning-scan --b afternoon-scan \
+    -s daily-check -d "每日早晚版本对比" \
+    -o daily_diff.csv -c rename
+
+# 之后每天只需一键运行
+dc compare-run daily-check
+```
+
+#### 工作流 2：复核前后对比
+
+```bash
+# 扫描 → 得到 batch-raw
+dc scan rules.yaml ./pkg --name batch-raw
+
+# 多人复核完一批 → 得到 batch-reviewed
+# ... mark / review 操作 ...
+
+# 对比看哪些问题已处理
+dc compare --a batch-raw --b batch-reviewed -o review_progress.json
+# 可以快速统计：多少问题状态变化了、多少处理人分配了
+```
+
+#### 工作流 3：保存配置 + 跨重启使用
+
+```bash
+# 第一次：保存对比配置
+dc compare-save -n "回归测试对比" -d "每轮回归后对比" \
+    --a-latest 2 --b-latest 1 \
+    -o regression_diff.json -c rename
+
+# 第二天：重启后直接用（配置已持久化）
+dc compare-run "回归测试对比"
+# ✅ 自动找到最近两个批次对比，输出到 regression_diff_1.json
+```
+
+---
+
 ## ⚠️ 边界场景提示
 
 所有边界场景都**不会清除既有批次状态**。
@@ -683,6 +984,12 @@ metadata:
 | `dc.bat preset-delete <名称>` | 删除视图预设 |
 | `dc.bat preset-export <名称> [output]` | 导出预设为可分享 JSON |
 | `dc.bat preset-import <file> [-f] [-N 新名称]` | 导入预设，支持覆盖或改名 |
+| `dc.bat compare --a <批次A> --b <批次B> [--a-latest N] [--b-latest N] [-o 输出] [-f json\|csv\|auto] [-c overwrite\|rename\|refuse] [-s 配置名]` | 批次对比（新增/消失/状态/处理人变化） |
+| `dc.bat compare-save -n <名称> [-d 说明] [--a/--a-latest N] [--b/--b-latest N] [-f 格式] [-o 路径] [-c 策略] [--force]` | 保存对比配置 |
+| `dc.bat compare-run <配置名> [--a/--b/--a-latest/--b-latest 覆盖] [-o 输出] [-f 格式] [-c 策略]` | 按命名配置运行对比 |
+| `dc.bat compare-list` | 列出所有对比配置 |
+| `dc.bat compare-show <名称>` | 查看对比配置详情 |
+| `dc.bat compare-delete <名称>` | 删除对比配置 |
 | `dc.bat --no-color ...` | 禁用彩色输出（日志/管道场景） |
 
 **退出码说明**：
@@ -690,10 +997,10 @@ metadata:
 | 退出码 | 含义 |
 |--------|------|
 | 0 | 成功 |
-| 1 | 目录不存在 / 文件不存在 / 预设不存在 / 运行时错误 |
-| 2 | 规则配置格式/语义错误 / 规则包或预设格式错误（坏 JSON / 缺字段） |
-| 3 | 重复扫描 / 规则/目录不一致 / 规则包或预设同名冲突（拒绝执行，未修改旧状态） |
-| 4 | 状态文件读写失败 / 权限不足 |
+| 1 | 目录不存在 / 文件不存在 / 预设不存在 / 批次不存在 / 运行时错误 |
+| 2 | 规则配置格式/语义错误 / 规则包或预设或对比配置格式错误（坏 JSON / 缺字段） |
+| 3 | 重复扫描 / 规则/目录不一致 / 规则包或预设或对比配置同名冲突 / 导出文件拒绝覆盖 |
+| 4 | 状态文件读写失败 / 权限不足 / 导出目录无写权限 |
 | 130 | Ctrl+C 中断 |
 
 ---

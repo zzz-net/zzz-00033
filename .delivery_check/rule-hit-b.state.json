@@ -1,0 +1,51 @@
+{
+  "batch_name": "rule-hit-b",
+  "data_dir": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\reviewer_rulehit_case\\data",
+  "rules": {
+    "batch_name": "rule-hit-b",
+    "root_alias": "hit",
+    "required_files": [
+      {
+        "pattern": "build/report*.pdf",
+        "description": "",
+        "optional": false,
+        "naming_rule": "rule-b",
+        "expiry_date": null,
+        "max_matches": null
+      }
+    ],
+    "naming_rules": [
+      {
+        "pattern": "build/report*.pdf",
+        "regex": "^good_b_\\d{8}\\.pdf$",
+        "name": "rule-b",
+        "description": "B规则"
+      }
+    ],
+    "ignore_patterns": [],
+    "expiry_date": null,
+    "metadata": {},
+    "source_path": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\reviewer_rulehit_case\\rules_hit_b.yaml",
+    "source_hash": "8f281d46e03890de"
+  },
+  "rules_hash": "8f281d46e03890de",
+  "issues": {
+    "ebe6ae72008f": {
+      "id": "ebe6ae72008f",
+      "type": "naming",
+      "path": "build/report_bad.pdf",
+      "message": "文件命名不符合规则「rule-b」",
+      "detail": "要求: B规则",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "命名不符合规范",
+      "status_label": "待复核"
+    }
+  },
+  "undo_stack": [],
+  "created_at": "2026-06-12T16:35:23",
+  "updated_at": "2026-06-12T16:35:23"
+}

@@ -1,0 +1,61 @@
+{
+  "batch_a": {
+    "name": "rule-hit-a",
+    "updated_at": "2026-06-12T16:35:23"
+  },
+  "batch_b": {
+    "name": "rule-hit-b",
+    "updated_at": "2026-06-12T16:35:23"
+  },
+  "compared_at": "2026-06-12T16:35:54",
+  "summary": {
+    "added": 0,
+    "removed": 0,
+    "changed": 1,
+    "unchanged": 0,
+    "status_changed": 0,
+    "reviewer_changed": 0,
+    "type_changed": 0,
+    "message_changed": 1
+  },
+  "added": [],
+  "removed": [],
+  "changed": [
+    {
+      "match_key": "naming::path::build/report_bad.pdf",
+      "change_types": [
+        "message",
+        "detail"
+      ],
+      "old": {
+        "id": "c3355242ae43",
+        "type": "naming",
+        "path": "build/report_bad.pdf",
+        "message": "文件命名不符合规则「rule-a」",
+        "detail": "要求: A规则",
+        "status": "pending",
+        "reviewer": null,
+        "note": "",
+        "reviewed_at": null,
+        "group_key": null,
+        "type_label": "命名不符合规范",
+        "status_label": "待复核"
+      },
+      "new": {
+        "id": "ebe6ae72008f",
+        "type": "naming",
+        "path": "build/report_bad.pdf",
+        "message": "文件命名不符合规则「rule-b」",
+        "detail": "要求: B规则",
+        "status": "pending",
+        "reviewer": null,
+        "note": "",
+        "reviewed_at": null,
+        "group_key": null,
+        "type_label": "命名不符合规范",
+        "status_label": "待复核"
+      }
+    }
+  ],
+  "unchanged": []
+}
