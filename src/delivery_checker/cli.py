@@ -78,6 +78,22 @@ from .compare import (
     list_compare_configs,
     save_compare_config,
 )
+from .backup import (
+    BackupConflictError,
+    BackupCorruptedError,
+    BackupFormatError,
+    BackupNotFoundError,
+    BackupPermissionError,
+    BackupVersionMismatchError,
+    apply_restore,
+    create_backup,
+    delete_backup,
+    export_backup,
+    import_backup,
+    list_backups,
+    preview_restore,
+    show_backup,
+)
 
 
 C_RESET = "\033[0m"
@@ -1535,6 +1551,337 @@ def cmd_snapshot_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backup_create(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        manifest, data = create_backup(
+            base_dir=base_dir,
+            name=args.name,
+            description=args.description or "",
+            include_batches=not args.no_batches,
+            include_rule_packages=not args.no_rules,
+            include_view_presets=not args.no_presets,
+            include_snapshots=not args.no_snapshots,
+            include_compare_configs=not args.no_compare,
+        )
+    except BackupFormatError as e:
+        print(_color(f"❌ 格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except BackupConflictError as e:
+        print(_color(f"⚠️  {e}", C_YELLOW, color), file=sys.stderr)
+        print(_color("   换个名称创建，或先删除已有备份。", C_GRAY, color), file=sys.stderr)
+        return 3
+    except BackupPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    includes = []
+    if manifest.include_batches:
+        includes.append("批次历史")
+    if manifest.include_rule_packages:
+        includes.append("规则包")
+    if manifest.include_view_presets:
+        includes.append("视图预设")
+    if manifest.include_snapshots:
+        includes.append("快照")
+    if manifest.include_compare_configs:
+        includes.append("对比配置")
+
+    print(_color(f"✅ 备份已创建: {manifest.name}", C_GREEN, color))
+    print(f"   说明: {manifest.description or '(无)'}")
+    print(f"   包含: {', '.join(includes)}")
+    print(f"   内容: {manifest.content_summary}")
+    print(f"   创建时间: {manifest.created_at}")
+    return 0
+
+
+def cmd_backup_list(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        backups = list_backups(base_dir)
+    except BackupFormatError as e:
+        print(_color(f"❌ 索引格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except BackupPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    if not backups:
+        print(_color("（暂无备份）", C_GRAY, color))
+        print(_color("使用 backup create 子命令创建第一个备份", C_GRAY, color))
+        return 0
+
+    print(_color(f"{'#':>3}  {'名称':<20}  {'大小':>10}  {'创建时间':<22}  包含内容", C_BOLD, color))
+    print(_color("-" * 100, C_GRAY, color))
+    for idx, b in enumerate(backups, 1):
+        name = _color(b["name"][:20], C_CYAN, color)
+        size_bytes = b.get("total_size_bytes", 0)
+        from .backup import _human_readable_size
+        size_str = _human_readable_size(size_bytes)
+        created = b.get("created_at", "")[:19]
+        includes = []
+        if b.get("include_batches"):
+            includes.append("批次")
+        if b.get("include_rule_packages"):
+            includes.append("规则包")
+        if b.get("include_view_presets"):
+            includes.append("预设")
+        if b.get("include_snapshots"):
+            includes.append("快照")
+        if b.get("include_compare_configs"):
+            includes.append("对比")
+        inc_str = ",".join(includes) if includes else "(空)"
+        print(f"{idx:>3}  {name:<20}  {size_str:>10}  {created:<22}  {inc_str}")
+        if b.get("description"):
+            print(f"     {_color(b['description'][:60], C_GRAY, color)}")
+        if b.get("source_hostname"):
+            print(f"     {_color('来源: ' + b.get('source_hostname', ''), C_GRAY, color)}")
+    return 0
+
+
+def cmd_backup_show(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        info = show_backup(base_dir, args.name)
+    except BackupNotFoundError as e:
+        print(_color(f"❌ 备份不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except BackupCorruptedError as e:
+        print(_color(f"❌ 备份文件损坏: {e}", C_RED, color), file=sys.stderr)
+        return 5
+    except BackupVersionMismatchError as e:
+        print(_color(f"❌ 版本不兼容: {e}", C_RED, color), file=sys.stderr)
+        return 6
+    except BackupPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    except BackupFormatError as e:
+        print(_color(f"❌ 格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+
+    print(_color(f"📦 备份「{info['name']}」详情", C_BOLD, color))
+    if info["description"]:
+        print(f"  说明: {info['description']}")
+    print(f"  体积: {info['total_size_human']} ({info['total_size_bytes']} 字节)")
+    print(f"  创建时间: {info['created_at']}")
+    print(f"  更新时间: {info['updated_at']}")
+    print(f"  包含内容: {', '.join(info['includes']) if info['includes'] else '(无)'}")
+    print(f"  内容摘要: {info['content_summary']}")
+    print(f"  来源摘要: {info['source_summary'] or '(无)'}")
+    print(f"  格式版本: v{info['format_version']}")
+    return 0
+
+
+def cmd_backup_export(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    fmt = getattr(args, "format", "json") or "json"
+    output = args.output or f"{args.name}.backup.json"
+    if fmt == "zip" and not output.endswith(".zip"):
+        output = os.path.splitext(output)[0] + ".zip"
+    try:
+        saved = export_backup(base_dir, args.name, output, fmt)
+    except BackupNotFoundError as e:
+        print(_color(f"❌ 备份不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except BackupCorruptedError as e:
+        print(_color(f"❌ 备份文件损坏: {e}", C_RED, color), file=sys.stderr)
+        return 5
+    except BackupPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    print(_color(f"📄 备份已导出: {saved}", C_GREEN, color))
+    return 0
+
+
+def cmd_backup_import(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    strategy_map = {"overwrite": "overwrite", "rename": "rename", "refuse": "refuse"}
+    strategy = strategy_map.get(args.conflict, "refuse")
+    try:
+        manifest, data = import_backup(
+            base_dir,
+            args.input,
+            conflict_strategy=strategy,
+            rename_name=args.rename_name,
+        )
+    except BackupNotFoundError as e:
+        print(_color(f"❌ 文件不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except BackupFormatError as e:
+        print(_color(f"❌ 格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except BackupCorruptedError as e:
+        print(_color(f"❌ 备份文件损坏: {e}", C_RED, color), file=sys.stderr)
+        return 5
+    except BackupVersionMismatchError as e:
+        print(_color(f"❌ 版本不兼容: {e}", C_RED, color), file=sys.stderr)
+        return 6
+    except BackupConflictError as e:
+        print(_color(f"⚠️  {e}", C_YELLOW, color), file=sys.stderr)
+        strategy_label = {"overwrite": "覆盖", "rename": "自动改名", "refuse": "拒绝"}.get(strategy, strategy)
+        print(_color(f"   当前策略: {strategy_label}", C_GRAY, color), file=sys.stderr)
+        if strategy == "refuse":
+            print(_color("   使用 --conflict overwrite 覆盖，或 --conflict rename 自动改名。", C_GRAY, color), file=sys.stderr)
+        return 3
+    except BackupPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    strategy_label = {"overwrite": "覆盖", "rename": "自动改名", "refuse": "拒绝"}.get(strategy, strategy)
+    print(_color(f"✅ 备份已导入: {manifest.name}", C_GREEN, color))
+    print(f"  冲突策略: {strategy_label}")
+    print(f"  内容摘要: {manifest.content_summary}")
+    print(f"  导入时间: {manifest.updated_at}")
+    return 0
+
+
+def cmd_backup_restore(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    conflict_strategy = args.conflict or "skip"
+
+    try:
+        diff = preview_restore(base_dir, args.name)
+    except BackupNotFoundError as e:
+        print(_color(f"❌ 备份不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except BackupCorruptedError as e:
+        print(_color(f"❌ 备份文件损坏: {e}", C_RED, color), file=sys.stderr)
+        return 5
+    except BackupVersionMismatchError as e:
+        print(_color(f"❌ 版本不兼容: {e}", C_RED, color), file=sys.stderr)
+        return 6
+    except BackupPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    except BackupFormatError as e:
+        print(_color(f"❌ 格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+
+    print(_color(f"📋 备份「{args.name}」恢复差异预览", C_BOLD, color))
+    print()
+
+    total_new = 0
+    total_conflict = 0
+    total_unchanged = 0
+
+    section_labels = {
+        "batches": "批次历史",
+        "rule_packages": "规则包",
+        "view_presets": "视图预设",
+        "snapshots": "快照",
+        "compare_configs": "对比配置",
+    }
+
+    for section_key, section_diff in diff.get("sections", {}).items():
+        label = section_labels.get(section_key, section_key)
+        new_count = section_diff.get("new_count", 0)
+        conflict_count = section_diff.get("conflict_count", 0)
+        unchanged_count = section_diff.get("unchanged_count", 0)
+        total_new += new_count
+        total_conflict += conflict_count
+        total_unchanged += unchanged_count
+
+        print(f"  {_color(label, C_BOLD, color)}: "
+              f"{_color('新增', C_GREEN, color)} {new_count}  "
+              f"{_color('冲突', C_YELLOW, color)} {conflict_count}  "
+              f"{_color('无变化', C_GRAY, color)} {unchanged_count}")
+
+        for item in section_diff.get("new", []):
+            print(f"    {_color('➕', C_GREEN, color)} {item['key']}")
+        for item in section_diff.get("conflicting", []):
+            print(f"    {_color('⚠️ ', C_YELLOW, color)} {item['key']}")
+            print(f"       当前: {item.get('current_summary', '')}")
+            print(f"       备份: {item.get('backup_summary', '')}")
+
+    print()
+    print(_color(f"汇总: 新增 {total_new}  冲突 {total_conflict}  无变化 {total_unchanged}", C_BOLD, color))
+
+    if diff.get("has_conflicts"):
+        print()
+        print(_color("⚠️  检测到数据冲突！", C_YELLOW, color))
+        strategy_labels = {
+            "overwrite": "覆盖（备份覆盖当前）",
+            "skip": "跳过（保留当前，仅添加新项）",
+            "abort": "中止",
+        }
+        print(f"  冲突策略: {strategy_labels.get(conflict_strategy, conflict_strategy)}")
+
+    if getattr(args, "dry_run", False):
+        print()
+        print(_color("（--dry-run 模式，未执行恢复操作）", C_GRAY, color))
+        return 0
+
+    print()
+    if not _confirm("确认执行恢复？", default_no=True):
+        print(_color("已取消恢复。", C_GRAY, color))
+        return 0
+
+    try:
+        result = apply_restore(base_dir, args.name, conflict_strategy)
+    except BackupConflictError as e:
+        print(_color(f"❌ {e}", C_RED, color), file=sys.stderr)
+        return 3
+    except BackupPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    except Exception as e:
+        print(_color(f"❌ 恢复失败: {e}", C_RED, color), file=sys.stderr)
+        return 5
+
+    print()
+    print(_color("📊 恢复结果:", C_BOLD, color))
+    for section_key, section_result in result.get("sections", {}).items():
+        label = section_labels.get(section_key, section_key)
+        added = section_result.get("added", [])
+        skipped = section_result.get("skipped", [])
+        overwritten = section_result.get("overwritten", [])
+        errors = section_result.get("errors", [])
+        parts = []
+        if added:
+            parts.append(f"新增 {len(added)}")
+        if overwritten:
+            parts.append(f"覆盖 {len(overwritten)}")
+        if skipped:
+            parts.append(f"跳过 {len(skipped)}")
+        if errors:
+            parts.append(_color(f"错误 {len(errors)}", C_RED, color))
+        print(f"  {label}: {', '.join(parts) if parts else '(无操作)'}")
+        for err in errors:
+            print(f"    {_color(f'❌ {err}', C_RED, color)}")
+
+    has_errors = any(
+        section_result.get("errors")
+        for section_result in result.get("sections", {}).values()
+    )
+    if has_errors:
+        return 5
+
+    print()
+    print(_color("✅ 恢复完成", C_GREEN, color))
+    return 0
+
+
+def cmd_backup_delete(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        delete_backup(base_dir, args.name)
+    except BackupNotFoundError as e:
+        print(_color(f"❌ 备份不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except BackupPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    print(_color(f"✅ 已删除备份: {args.name}", C_GREEN, color))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="delivery-checker",
@@ -1756,6 +2103,54 @@ def build_parser() -> argparse.ArgumentParser:
     p_snap_delete = p_snapshot_sub.add_parser("delete", help="删除快照")
     p_snap_delete.add_argument("name", help="快照名称")
     p_snap_delete.set_defaults(func=cmd_snapshot_delete)
+
+    p_backup = sub.add_parser("backup", help="工作区备份与恢复（create/list/show/export/import/restore/delete）")
+    p_backup_sub = p_backup.add_subparsers(dest="backup_command", required=True)
+
+    p_bk_create = p_backup_sub.add_parser("create", help="创建工作区备份")
+    p_bk_create.add_argument("--name", "-n", required=True, help="备份名称")
+    p_bk_create.add_argument("--description", "-d", default="", help="备份说明")
+    p_bk_create.add_argument("--no-batches", action="store_true", help="不包含批次历史")
+    p_bk_create.add_argument("--no-rules", action="store_true", help="不包含规则包")
+    p_bk_create.add_argument("--no-presets", action="store_true", help="不包含视图预设")
+    p_bk_create.add_argument("--no-snapshots", action="store_true", help="不包含快照")
+    p_bk_create.add_argument("--no-compare", action="store_true", help="不包含对比配置")
+    p_bk_create.set_defaults(func=cmd_backup_create)
+
+    p_bk_list = p_backup_sub.add_parser("list", help="列出所有备份")
+    p_bk_list.set_defaults(func=cmd_backup_list)
+
+    p_bk_show = p_backup_sub.add_parser("show", help="查看备份详情")
+    p_bk_show.add_argument("name", help="备份名称")
+    p_bk_show.set_defaults(func=cmd_backup_show)
+
+    p_bk_export = p_backup_sub.add_parser("export", help="导出备份为 JSON 或 ZIP 文件")
+    p_bk_export.add_argument("name", help="备份名称")
+    p_bk_export.add_argument("output", nargs="?", help="导出文件路径（默认: <name>.backup.json）")
+    p_bk_export.add_argument("--format", "-f", choices=["json", "zip"], default="json",
+                              help="导出格式（默认: json）")
+    p_bk_export.set_defaults(func=cmd_backup_export)
+
+    p_bk_import = p_backup_sub.add_parser("import", help="从文件导入备份")
+    p_bk_import.add_argument("input", help="备份导出文件路径 (.backup.json 或 .zip)")
+    p_bk_import.add_argument("--conflict", "-c", choices=["overwrite", "rename", "refuse"],
+                              default="refuse",
+                              help="同名冲突处理策略（默认 refuse 拒绝）")
+    p_bk_import.add_argument("--rename-name", "-N", help="重命名导入的备份名称")
+    p_bk_import.set_defaults(func=cmd_backup_import)
+
+    p_bk_restore = p_backup_sub.add_parser("restore", help="从备份恢复工作区数据（先预览差异再确认）")
+    p_bk_restore.add_argument("name", help="备份名称")
+    p_bk_restore.add_argument("--conflict", "-c", choices=["overwrite", "skip", "abort"],
+                               default="skip",
+                               help="冲突处理策略（默认 skip 跳过冲突项）")
+    p_bk_restore.add_argument("--dry-run", action="store_true",
+                               help="仅预览差异，不执行恢复操作")
+    p_bk_restore.set_defaults(func=cmd_backup_restore)
+
+    p_bk_delete = p_backup_sub.add_parser("delete", help="删除备份")
+    p_bk_delete.add_argument("name", help="备份名称")
+    p_bk_delete.set_defaults(func=cmd_backup_delete)
 
     return parser
 

@@ -15,6 +15,7 @@
 | **规则格式** | 同时支持 YAML（`.yaml/.yml`）和 JSON（`.json`） |
 | **报告导出** | 美观 HTML（卡片+表格）与 Excel 兼容 CSV（UTF-8-BOM） |
 | **边界容错** | 配置格式错误、目录不存在、重复扫描、规则不一致、空撤销 均有明确提示，**不清除已有批次状态** |
+| **备份与恢复** | 将工作区可迁移状态打成备份包，支持 JSON/ZIP 导出、跨机器导入、差异预览恢复 |
 
 ---
 
@@ -32,6 +33,11 @@ zzz-00033/
 │   ├── scanner.py              扫描引擎（5 类问题识别）
 │   ├── state.py                状态持久化（批次/撤销栈/续办）
 │   ├── report.py               报告导出（HTML/CSV）
+│   ├── rule_pkg.py             规则包管理（保存/导入/导出）
+│   ├── view_preset.py          视图预设（筛选/排序/一键套用）
+│   ├── snapshot.py             快照归档（创建/导入/导出）
+│   ├── compare.py              批次对比（差异识别/配置/导出）
+│   ├── backup.py               工作区备份与恢复（create/list/show/export/import/restore/delete）
 │   └── models.py               数据模型
 ├── examples/
 │   ├── rules.yaml              样例规则（YAML）
@@ -1102,6 +1108,313 @@ dc.bat snapshot show "week1-audit" --verbose
 
 ---
 
+## 💾 工作区备份与恢复
+
+把检查工具的可迁移状态（批次历史、规则包、视图预设、快照、对比配置）打成备份包，也能在另一台机器或另一份工作目录里恢复。所有备份保存在 `.delivery_check/backups/` 目录，**跨重启依然可用**，且**备份操作绝不会修改原数据**。
+
+### 备份包含内容
+
+创建备份时可选择包含以下内容（默认全部包含）：
+
+| 内容 | 说明 | 排除参数 |
+|------|------|---------|
+| 批次历史 | 所有 `.state.json` 文件（含复核状态、撤销栈） | `--no-batches` |
+| 规则包 | 所有已保存的规则包及索引 | `--no-rules` |
+| 视图预设 | 所有已保存的视图预设及索引 | `--no-presets` |
+| 快照 | 所有已保存的快照及索引 | `--no-snapshots` |
+| 对比配置 | 所有已保存的对比配置及索引 | `--no-compare` |
+
+### 快速上手
+
+#### 1. 创建备份
+
+```bash
+# 完整备份（包含全部内容）
+dc.bat backup create -n "v2交付前备份" -d "v2版本交付前完整备份"
+
+# 仅备份批次历史和规则包
+dc.bat backup create -n "规则+批次" -d "仅规则和批次" ^
+  --no-presets --no-snapshots --no-compare
+```
+
+**输出：**
+```
+✅ 备份已创建: v2交付前备份
+   说明: v2版本交付前完整备份
+   包含: 批次历史, 规则包, 视图预设, 快照, 对比配置
+   内容: {'batch_count': 3, 'rule_package_count': 2, 'view_preset_count': 1, 'snapshot_count': 1, 'compare_config_count': 1}
+   创建时间: 2026-06-12T16:00:00
+```
+
+#### 2. 列出所有备份
+
+```bash
+dc.bat backup list
+```
+
+**输出：**
+```
+  #  名称                  大小       创建时间               包含内容
+----------------------------------------------------------------------------------------------------
+  1  v2交付前备份          12.5 KB    2026-06-12T16:00:00    批次,规则包,预设,快照,对比
+     v2版本交付前完整备份
+     来源: MY-COMPUTER
+```
+
+#### 3. 查看备份详情
+
+```bash
+dc.bat backup show "v2交付前备份"
+```
+
+**输出：**
+```
+📦 备份「v2交付前备份」详情
+  说明: v2版本交付前完整备份
+  体积: 12.5 KB (12800 字节)
+  创建时间: 2026-06-12T16:00:00
+  更新时间: 2026-06-12T16:00:00
+  包含内容: 批次历史, 规则包, 视图预设, 快照, 对比配置
+  内容摘要: {'batch_count': 3, 'rule_package_count': 2, ...}
+  来源摘要: 目录: D:\work\delivery | 主机: MY-COMPUTER | 工具版本: 1.0.0
+  格式版本: v1
+```
+
+#### 4. 导出备份
+
+```bash
+# 导出为 JSON 文件
+dc.bat backup export "v2交付前备份" ./transfer/backup.backup.json
+
+# 导出为 ZIP 文件（推荐，体积更小）
+dc.bat backup export "v2交付前备份" ./transfer/backup.zip -f zip
+```
+
+#### 5. 导入备份（另一台机器或工作目录）
+
+```bash
+# 导入（默认策略：同名拒绝）
+dc.bat backup import ./transfer/backup.backup.json
+
+# 同名时自动改名（如 v2交付前备份_1）
+dc.bat backup import ./transfer/backup.backup.json --conflict rename
+
+# 同名时覆盖已有备份
+dc.bat backup import ./transfer/backup.backup.json --conflict overwrite
+
+# 导入 ZIP 格式（自动识别）
+dc.bat backup import ./transfer/backup.zip
+
+# 导入时指定新名称
+dc.bat backup import ./transfer/backup.backup.json --rename-name "新机器备份"
+```
+
+**场景 A：同名拒绝**
+```
+⚠️  备份「v2交付前备份」已存在。
+   当前策略: 拒绝
+   使用 --conflict overwrite 覆盖，或 --conflict rename 自动改名。
+```
+退出码：3
+
+**场景 B：自动改名成功**
+```
+✅ 备份已导入: v2交付前备份_1
+  冲突策略: 自动改名
+  内容摘要: {'batch_count': 3, ...}
+  导入时间: 2026-06-13T09:00:00
+```
+
+#### 6. 从备份恢复数据
+
+恢复前会**先预览差异**，让你看清楚哪些是新增、哪些有冲突，再确认是否执行。
+
+```bash
+# 预览差异（不执行恢复）
+dc.bat backup restore "v2交付前备份" --dry-run
+
+# 恢复（跳过冲突项，仅添加新数据）
+dc.bat backup restore "v2交付前备份" --conflict skip
+
+# 恢复（备份覆盖当前冲突项）
+dc.bat backup restore "v2交付前备份" --conflict overwrite
+
+# 仅预览不执行
+dc.bat backup restore "v2交付前备份" --dry-run
+```
+
+**预览输出示例：**
+```
+📋 备份「v2交付前备份」恢复差异预览
+
+  批次历史: 新增 2  冲突 1  无变化 0
+    ➕ batch-new-1
+    ⚠️  batch-old
+       当前: name=batch-old | ...
+       备份: name=batch-old | ...
+  规则包: 新增 0  冲突 0  无变化 2
+
+汇总: 新增 2  冲突 1  无变化 2
+
+⚠️  检测到数据冲突！
+  冲突策略: 跳过（保留当前，仅添加新项）
+
+确认执行恢复？ (y/N):
+```
+
+恢复冲突策略：
+
+| 策略 | 说明 |
+|------|------|
+| `skip`（默认） | 跳过冲突项，保留当前数据，仅添加新项 |
+| `overwrite` | 备份数据覆盖当前冲突项 |
+| `abort` | 存在任何冲突即中止恢复 |
+
+#### 7. 删除备份
+
+```bash
+dc.bat backup delete "v2交付前备份"
+```
+
+### 备份文件结构
+
+```
+.delivery_check/
+  backups/
+    index.json                     # 备份索引（元数据列表）
+    backups.log                    # 操作日志（审计记录）
+    v2交付前备份.backup.json        # 备份数据本体
+```
+
+**索引文件：** 记录所有备份的元数据（名称、说明、大小、创建时间、包含内容、来源等），重启后仍可列出。
+
+**操作日志：** `backups.log` 记录所有备份操作（创建、删除、导入、导出、恢复）和错误，用于审计追踪。
+
+**原子写入保证：** 所有写入操作先写 `.tmp` 再 `shutil.move` 替换，中途崩溃不会损坏文件。
+
+### 导出文件格式
+
+**JSON 格式：**
+```json
+{
+  "format_version": 1,
+  "type": "delivery-checker-backup",
+  "manifest": {
+    "name": "v2交付前备份",
+    "description": "v2版本交付前完整备份",
+    "created_at": "2026-06-12T16:00:00",
+    "source_dir": "D:\\work\\delivery",
+    "source_hostname": "MY-COMPUTER",
+    "tool_version": "1.0.0",
+    "format_version": 1,
+    "include_batches": true,
+    "include_rule_packages": true,
+    "include_view_presets": true,
+    "include_snapshots": true,
+    "include_compare_configs": true,
+    "content_summary": {"batch_count": 3, ...},
+    "total_size_bytes": 12800
+  },
+  "data": {
+    "batches": { ... },
+    "rule_packages": { ... },
+    "view_presets": { ... },
+    "snapshots": { ... },
+    "compare_configs": { ... }
+  }
+}
+```
+
+**ZIP 格式：** 包内含一个 `backup.json`，内容与 JSON 格式相同。
+
+### 错误码与边界处理
+
+| 退出码 | 场景 | 示例 |
+|-------|------|------|
+| **0** | 成功 | 创建/列出/查看/导出/导入/恢复/删除成功 |
+| **1** | 备份不存在 / 导入文件不存在 | `backup show no-such` → 备份不存在 |
+| **2** | 格式错误（坏 JSON / 缺字段 / 无效策略 / 空名称） | `backup create -n ""` → 格式错误 |
+| **3** | 创建同名冲突 / 导入同名拒绝 / 恢复冲突中止 | `backup create -n dup` → 名称冲突 |
+| **4** | 权限不足（读/写/删除失败） | 目标目录无写权限 |
+| **5** | 备份文件损坏 | 手动破坏备份 JSON 后 show |
+| **6** | 版本不兼容 | 导入未来版本备份 |
+
+#### 典型场景示例
+
+```bash
+# 场景 1：备份文件损坏
+# 手动破坏 .delivery_check/backups/corrupt.backup.json 后
+dc.bat backup show corrupt
+# ❌ 备份文件损坏: JSON 解析失败 ...
+# 退出码: 5
+
+# 场景 2：导入坏 JSON 文件
+echo "not json" > bad.backup.json
+dc.bat backup import bad.backup.json
+# ❌ 备份文件损坏: JSON 格式错误 ...
+# 退出码: 5
+
+# 场景 3：导入非备份文件
+dc.bat backup import some-other.json
+# ❌ 格式错误: 导入文件不是有效的 delivery-checker 备份文件
+# 退出码: 2
+
+# 场景 4：导入版本不兼容
+dc.bat backup import future-backup.json
+# ❌ 版本不兼容: 备份格式版本 v999 高于当前工具支持版本 v1，请升级工具
+# 退出码: 6
+
+# 场景 5：目录无写权限
+dc.bat backup create -n "test"
+# ❌ 权限错误: 无法创建目录 ...: Permission denied
+# 退出码: 4
+```
+
+> **重要保证**：备份操作是**只读**的，**绝不会修改原批次、撤销栈、规则包索引、视图预设或快照**。即使备份操作失败，原有数据完整无损。恢复操作需手动确认，冲突时不会直接覆盖。
+
+### 常用工作流示例
+
+#### 工作流 1：跨机器迁移
+
+```bash
+# 机器 A：创建并导出备份
+dc.bat backup create -n "项目迁移" -d "从开发机迁移到服务器"
+dc.bat backup export "项目迁移" ./transfer/project.zip -f zip
+
+# 机器 B：导入并恢复
+dc.bat backup import ./transfer/project.zip
+dc.bat backup restore "项目迁移" --conflict skip
+```
+
+#### 工作流 2：交付前快照+备份双保险
+
+```bash
+# 1. 创建快照（审计留档）
+dc.bat snapshot create -n "v2-final" -b "release-v2"
+
+# 2. 创建完整备份（可恢复）
+dc.bat backup create -n "v2-交付前" -d "v2交付前完整备份"
+
+# 3. 导出备份到安全位置
+dc.bat backup export "v2-交付前" ./archives/v2-backup.zip -f zip
+```
+
+#### 工作流 3：跨重启使用（持久化）
+
+```bash
+# 第一次：创建备份
+dc.bat backup create -n "daily" -d "每日备份"
+
+# 重启后：备份仍在
+dc.bat backup list
+# （daily 仍在列表中）
+
+dc.bat backup show "daily"
+# 可以查看大小、内容、来源等完整信息
+```
+
+---
+
 ## ⚠️ 边界场景提示
 
 所有边界场景都**不会清除既有批次状态**。
@@ -1306,6 +1619,13 @@ metadata:
 | `dc.bat snapshot export <名称> [输出路径]` | 导出快照为 JSON 文件 |
 | `dc.bat snapshot import <文件> [--conflict overwrite\|rename\|refuse] [--rename-name <新名称>]` | 导入快照，支持三种冲突处理策略 |
 | `dc.bat snapshot delete <名称>` | 删除快照 |
+| `dc.bat backup create -n <名称> [-d 说明] [--no-batches] [--no-rules] [--no-presets] [--no-snapshots] [--no-compare]` | 创建工作区备份 |
+| `dc.bat backup list` | 列出所有备份 |
+| `dc.bat backup show <名称>` | 查看备份详情（体积/时间/内容/来源） |
+| `dc.bat backup export <名称> [输出路径] [-f json\|zip]` | 导出备份为 JSON 或 ZIP 文件 |
+| `dc.bat backup import <文件> [--conflict overwrite\|rename\|refuse] [--rename-name <新名称>]` | 导入备份，支持三种冲突处理策略 |
+| `dc.bat backup restore <名称> [--conflict overwrite\|skip\|abort] [--dry-run]` | 从备份恢复数据（先预览差异再确认） |
+| `dc.bat backup delete <名称>` | 删除备份 |
 | `dc.bat --no-color ...` | 禁用彩色输出（日志/管道场景） |
 
 **退出码说明**：
@@ -1313,11 +1633,12 @@ metadata:
 | 退出码 | 含义 |
 |--------|------|
 | 0 | 成功 |
-| 1 | 目录不存在 / 文件不存在 / 预设不存在 / 批次不存在 / 快照不存在 / 运行时错误 |
-| 2 | 规则配置格式/语义错误 / 规则包或预设或对比配置或快照格式错误（坏 JSON / 缺字段） / 快照导入名称冲突（refuse 策略） |
-| 3 | 重复扫描 / 规则/目录不一致 / 规则包或预设或对比配置或快照同名冲突 / 导出文件拒绝覆盖 |
-| 4 | 状态文件读写失败 / 权限不足 / 导出目录无写权限 / 快照权限不足 |
-| 5 | 快照创建/导入其他失败 |
+| 1 | 目录不存在 / 文件不存在 / 预设不存在 / 批次不存在 / 快照不存在 / 备份不存在 / 运行时错误 |
+| 2 | 规则配置格式/语义错误 / 规则包或预设或对比配置或快照或备份格式错误（坏 JSON / 缺字段） / 快照导入名称冲突（refuse 策略） / 备份名称为空 |
+| 3 | 重复扫描 / 规则/目录不一致 / 规则包或预设或对比配置或快照或备份同名冲突 / 导出文件拒绝覆盖 / 恢复冲突中止 |
+| 4 | 状态文件读写失败 / 权限不足 / 导出目录无写权限 / 快照或备份权限不足 |
+| 5 | 快照创建/导入其他失败 / 备份文件损坏 |
+| 6 | 备份版本不兼容 |
 | 130 | Ctrl+C 中断 |
 
 ---

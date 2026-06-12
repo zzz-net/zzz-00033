@@ -13,6 +13,7 @@ import time
 import unittest
 import json
 import hashlib
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -102,6 +103,23 @@ from delivery_checker.snapshot import (
     get_snapshot,
     import_snapshot,
     list_snapshots,
+)
+from delivery_checker.backup import (
+    BackupConflictError,
+    BackupCorruptedError,
+    BackupFormatError,
+    BackupNotFoundError,
+    BackupPermissionError,
+    BackupVersionMismatchError,
+    apply_restore,
+    create_backup,
+    delete_backup,
+    export_backup,
+    get_backup,
+    import_backup,
+    list_backups,
+    preview_restore,
+    show_backup,
 )
 
 
@@ -4163,6 +4181,843 @@ class TestSnapshotCliEndToEnd(unittest.TestCase):
 
             default_path = os.path.join(tmp, "def-snap.snapshot.json")
             self.assertTrue(os.path.exists(default_path))
+
+
+class TestBackupCoreLogic(unittest.TestCase):
+    """备份核心逻辑：创建、查询、导出、导入、恢复、删除"""
+
+    def _make_batch_state(self, tmp, batch_name, issue_count=3):
+        from delivery_checker.state import BatchState
+        from delivery_checker.config import CheckRules, RequiredFile
+        from delivery_checker.models import Issue, IssueType, ReviewStatus
+        rules = CheckRules(
+            batch_name=batch_name,
+            root_alias="test",
+            required_files=[RequiredFile(pattern="a.txt")],
+        )
+        rules.source_path = os.path.join(tmp, "rules.yaml")
+        state = BatchState.new(rules, tmp)
+        issues = []
+        for i in range(issue_count):
+            issues.append(Issue(
+                id=f"issue-{i}",
+                type=IssueType.MISSING,
+                path=f"file_{i}.txt",
+                message=f"文件 {i} 缺失",
+                status=ReviewStatus.PENDING,
+            ))
+        state.issues = {i.id: i for i in issues}
+        state.save(tmp)
+        return state
+
+    def test_create_backup_with_batches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "test-batch", 3)
+            manifest, data = create_backup(tmp, name="bk-1", description="测试备份")
+            self.assertEqual(manifest.name, "bk-1")
+            self.assertEqual(manifest.description, "测试备份")
+            self.assertTrue(manifest.include_batches)
+            self.assertIn("batches", data)
+            self.assertEqual(manifest.content_summary.get("batch_count"), 1)
+            self.assertGreater(manifest.total_size_bytes, 0)
+
+    def test_create_backup_selective(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-selective", 2)
+            manifest, data = create_backup(
+                tmp, name="bk-sel",
+                include_batches=True,
+                include_rule_packages=False,
+                include_view_presets=False,
+                include_snapshots=False,
+                include_compare_configs=False,
+            )
+            self.assertTrue(manifest.include_batches)
+            self.assertFalse(manifest.include_rule_packages)
+            self.assertNotIn("rule_packages", data)
+            self.assertIn("batches", data)
+
+    def test_create_backup_empty_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BackupFormatError):
+                create_backup(tmp, name="")
+
+    def test_create_backup_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            create_backup(tmp, name="dup")
+            with self.assertRaises(BackupConflictError):
+                create_backup(tmp, name="dup")
+
+    def test_list_backups(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-list", 1)
+            create_backup(tmp, name="bk-a")
+            time.sleep(1.1)
+            create_backup(tmp, name="bk-b")
+            backups = list_backups(tmp)
+            self.assertEqual(len(backups), 2)
+            self.assertEqual(backups[0]["name"], "bk-b")
+            self.assertEqual(backups[1]["name"], "bk-a")
+
+    def test_list_backups_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backups = list_backups(tmp)
+            self.assertEqual(backups, [])
+
+    def test_get_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-get", 2)
+            create_backup(tmp, name="bk-get", description="获取测试")
+            manifest, data = get_backup(tmp, "bk-get")
+            self.assertEqual(manifest.name, "bk-get")
+            self.assertEqual(manifest.description, "获取测试")
+            self.assertIn("batches", data)
+
+    def test_get_backup_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BackupNotFoundError):
+                get_backup(tmp, "no-such")
+
+    def test_show_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-show", 2)
+            create_backup(tmp, name="bk-show", description="显示测试")
+            info = show_backup(tmp, "bk-show")
+            self.assertEqual(info["name"], "bk-show")
+            self.assertEqual(info["description"], "显示测试")
+            self.assertIn("批次历史", info["includes"])
+            self.assertGreater(info["total_size_bytes"], 0)
+            self.assertIn("B", info["total_size_human"])
+            self.assertIn("目录:", info["source_summary"])
+
+    def test_delete_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-del", 1)
+            create_backup(tmp, name="bk-del")
+            self.assertEqual(len(list_backups(tmp)), 1)
+            delete_backup(tmp, "bk-del")
+            self.assertEqual(len(list_backups(tmp)), 0)
+            with self.assertRaises(BackupNotFoundError):
+                get_backup(tmp, "bk-del")
+
+    def test_delete_backup_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BackupNotFoundError):
+                delete_backup(tmp, "no-such")
+
+    def test_export_and_import_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-exp", 3)
+            create_backup(tmp, name="bk-exp", description="导出测试")
+            export_path = os.path.join(tmp, "export.backup.json")
+            saved = export_backup(tmp, "bk-exp", export_path, fmt="json")
+            self.assertTrue(os.path.exists(saved))
+            with open(saved, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertEqual(data["type"], "delivery-checker-backup")
+            self.assertEqual(data["manifest"]["name"], "bk-exp")
+
+            with tempfile.TemporaryDirectory() as tmp2:
+                manifest, data = import_backup(tmp2, saved)
+                self.assertEqual(manifest.name, "bk-exp")
+                self.assertEqual(manifest.description, "导出测试")
+                self.assertEqual(len(list_backups(tmp2)), 1)
+
+    def test_export_and_import_zip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-zip", 2)
+            create_backup(tmp, name="bk-zip", description="ZIP导出测试")
+            export_path = os.path.join(tmp, "export.zip")
+            saved = export_backup(tmp, "bk-zip", export_path, fmt="zip")
+            self.assertTrue(os.path.exists(saved))
+            self.assertTrue(zipfile.is_zipfile(saved))
+
+            with tempfile.TemporaryDirectory() as tmp2:
+                manifest, data = import_backup(tmp2, saved)
+                self.assertEqual(manifest.name, "bk-zip")
+                self.assertEqual(len(list_backups(tmp2)), 1)
+
+    def test_import_conflict_refuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-cf", 1)
+            create_backup(tmp, name="bk-cf")
+            export_path = os.path.join(tmp, "cf.backup.json")
+            export_backup(tmp, "bk-cf", export_path)
+            with self.assertRaises(BackupConflictError):
+                import_backup(tmp, export_path, conflict_strategy="refuse")
+
+    def test_import_conflict_rename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-rn", 1)
+            create_backup(tmp, name="bk-rn")
+            export_path = os.path.join(tmp, "rn.backup.json")
+            export_backup(tmp, "bk-rn", export_path)
+            manifest, _ = import_backup(tmp, export_path, conflict_strategy="rename")
+            self.assertEqual(manifest.name, "bk-rn_1")
+            self.assertEqual(len(list_backups(tmp)), 2)
+
+    def test_import_conflict_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-ow", 1)
+            create_backup(tmp, name="bk-ow", description="原始")
+            export_path = os.path.join(tmp, "ow.backup.json")
+            export_backup(tmp, "bk-ow", export_path)
+            manifest, _ = import_backup(tmp, export_path, conflict_strategy="overwrite")
+            self.assertEqual(manifest.name, "bk-ow")
+            self.assertEqual(len(list_backups(tmp)), 1)
+
+    def test_import_bad_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_path = os.path.join(tmp, "bad.json")
+            with open(bad_path, "w", encoding="utf-8") as f:
+                f.write("not json at all")
+            with self.assertRaises(BackupCorruptedError):
+                import_backup(tmp, bad_path)
+
+    def test_import_wrong_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wrong_path = os.path.join(tmp, "wrong.json")
+            with open(wrong_path, "w", encoding="utf-8") as f:
+                json.dump({"type": "wrong-type", "manifest": {}, "data": {}}, f)
+            with self.assertRaises(BackupFormatError):
+                import_backup(tmp, wrong_path)
+
+    def test_import_missing_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wrong_path = os.path.join(tmp, "missing.json")
+            with open(wrong_path, "w", encoding="utf-8") as f:
+                json.dump({"type": "delivery-checker-backup"}, f)
+            with self.assertRaises(BackupFormatError):
+                import_backup(tmp, wrong_path)
+
+    def test_import_version_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_path = os.path.join(tmp, "future.json")
+            with open(bad_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "type": "delivery-checker-backup",
+                    "format_version": 999,
+                    "manifest": {"name": "future-bk"},
+                    "data": {},
+                }, f)
+            with self.assertRaises(BackupVersionMismatchError):
+                import_backup(tmp, bad_path)
+
+    def test_import_file_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BackupNotFoundError):
+                import_backup(tmp, os.path.join(tmp, "nonexistent.json"))
+
+    def test_corrupted_backup_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-corrupt", 1)
+            create_backup(tmp, name="bk-corrupt")
+            backup_path = os.path.join(
+                tmp, ".delivery_check", "backups", "bk-corrupt.backup.json"
+            )
+            with open(backup_path, "w", encoding="utf-8") as f:
+                f.write("{ this is not valid json !!!")
+            with self.assertRaises(BackupCorruptedError):
+                get_backup(tmp, "bk-corrupt")
+
+    def test_version_mismatch_on_get(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-ver", 1)
+            create_backup(tmp, name="bk-ver")
+            backup_path = os.path.join(
+                tmp, ".delivery_check", "backups", "bk-ver.backup.json"
+            )
+            with open(backup_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["format_version"] = 999
+            with open(backup_path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            with self.assertRaises(BackupVersionMismatchError):
+                get_backup(tmp, "bk-ver")
+
+    def test_persistence_across_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-persist", 2)
+            create_backup(tmp, name="bk-persist", description="持久化测试")
+            self.assertEqual(len(list_backups(tmp)), 1)
+            backups1 = list_backups(tmp)
+            manifest1, data1 = get_backup(tmp, "bk-persist")
+            backups2 = list_backups(tmp)
+            self.assertEqual(len(backups2), 1)
+            self.assertEqual(backups2[0]["name"], backups1[0]["name"])
+            manifest2, data2 = get_backup(tmp, "bk-persist")
+            self.assertEqual(manifest2.name, manifest1.name)
+            self.assertEqual(manifest2.description, manifest1.description)
+
+    def test_preview_restore_new_items(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-preview", 2)
+            create_backup(tmp, name="bk-preview", description="预览测试")
+            state_path = os.path.join(
+                tmp, ".delivery_check", "batch-preview.state.json"
+            )
+            if os.path.exists(state_path):
+                os.remove(state_path)
+            diff = preview_restore(tmp, "bk-preview")
+            self.assertIn("sections", diff)
+            self.assertIn("batches", diff["sections"])
+            batches_section = diff["sections"]["batches"]
+            self.assertGreater(batches_section.get("new_count", 0), 0)
+
+    def test_preview_restore_no_conflicts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-noconflict", 1)
+            create_backup(tmp, name="bk-noconflict")
+            delete_state_path = os.path.join(
+                tmp, ".delivery_check", "batch-noconflict.state.json"
+            )
+            if os.path.exists(delete_state_path):
+                os.remove(delete_state_path)
+            diff = preview_restore(tmp, "bk-noconflict")
+            batches_section = diff["sections"]["batches"]
+            self.assertGreater(batches_section.get("new_count", 0), 0)
+            self.assertFalse(diff.get("has_conflicts", False))
+
+    def test_apply_restore_add_new_batches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-restore", 2)
+            create_backup(tmp, name="bk-restore")
+            state_path = os.path.join(
+                tmp, ".delivery_check", "batch-restore.state.json"
+            )
+            if os.path.exists(state_path):
+                os.remove(state_path)
+            result = apply_restore(tmp, "bk-restore", conflict_strategy="skip")
+            self.assertIn("batches", result["sections"])
+            batches_result = result["sections"]["batches"]
+            self.assertIn("batch-restore", batches_result.get("added", []))
+
+    def test_apply_restore_conflict_skip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-skip", 1)
+            create_backup(tmp, name="bk-skip")
+            result = apply_restore(tmp, "bk-skip", conflict_strategy="skip")
+            batches_result = result["sections"]["batches"]
+            self.assertIn("batch-skip", batches_result.get("skipped", []))
+
+    def test_apply_restore_conflict_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-overwrite", 1)
+            create_backup(tmp, name="bk-overwrite")
+            result = apply_restore(tmp, "bk-overwrite", conflict_strategy="overwrite")
+            batches_result = result["sections"]["batches"]
+            self.assertIn("batch-overwrite", batches_result.get("overwritten", []))
+
+    def test_apply_restore_conflict_abort(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_batch_state(tmp, "batch-abort", 1)
+            create_backup(tmp, name="bk-abort")
+            state_path = os.path.join(
+                tmp, ".delivery_check", "batch-abort.state.json"
+            )
+            with open(state_path, "r", encoding="utf-8") as f:
+                state_data = json.load(f)
+            for issue_id in state_data.get("issues", {}):
+                state_data["issues"][issue_id]["status"] = "passed"
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump(state_data, f, ensure_ascii=False, indent=2)
+            with self.assertRaises(BackupConflictError):
+                apply_restore(tmp, "bk-abort", conflict_strategy="abort")
+
+    def test_backup_does_not_modify_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._make_batch_state(tmp, "batch-immutable", 2)
+            state_file = os.path.join(
+                tmp, ".delivery_check", "batch-immutable.state.json"
+            )
+            with open(state_file, "rb") as f:
+                before_hash = hashlib.sha256(f.read()).hexdigest()
+            create_backup(tmp, name="bk-imm")
+            with open(state_file, "rb") as f:
+                after_hash = hashlib.sha256(f.read()).hexdigest()
+            self.assertEqual(before_hash, after_hash,
+                             "备份操作修改了原批次状态文件！")
+
+
+class TestBackupCliEndToEnd(unittest.TestCase):
+    """CLI 端到端测试：用真实 subprocess 跑通所有场景"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+
+    def _run_in(self, work_dir, *args, input_text=None):
+        import subprocess
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.path.join(self.ROOT, "src")
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["NO_COLOR"] = "1"
+        result = subprocess.run(
+            [sys.executable, "-m", "delivery_checker", *args],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=work_dir,
+            input=input_text,
+        )
+        return result
+
+    def _create_rules_file(self, tmp, batch_name):
+        rules_path = os.path.join(tmp, f"rules_{batch_name}.yaml")
+        with open(rules_path, "w", encoding="utf-8") as f:
+            f.write(
+                f"batch_name: '{batch_name}'\n"
+                f"root_alias: 'test'\n"
+                f"required_files:\n"
+                f"  - 'README.md'\n"
+                f"  - 'docs/design.md'\n"
+                f"ignore_patterns:\n"
+                f"  - '**/*.log'\n"
+            )
+        return rules_path
+
+    def _create_data_dir(self, tmp):
+        data_dir = os.path.join(tmp, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(os.path.join(data_dir, "docs"), exist_ok=True)
+        with open(os.path.join(data_dir, "README.md"), "w") as f:
+            f.write("# Test")
+        with open(os.path.join(data_dir, "docs", "design.md"), "w") as f:
+            f.write("# Design")
+        with open(os.path.join(data_dir, "extra.txt"), "w") as f:
+            f.write("extra file")
+        return data_dir
+
+    def _setup_workspace(self, tmp, batch_name="bk-test-batch"):
+        rules = self._create_rules_file(tmp, batch_name)
+        data = self._create_data_dir(tmp)
+        r_scan = self._run_in(tmp, "scan", rules, data)
+        self.assertEqual(r_scan.returncode, 0, f"scan: {r_scan.stderr}")
+        return rules, data
+
+    def test_cli_backup_create_and_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-bk-batch")
+            r = self._run_in(
+                tmp, "backup", "create",
+                "-n", "my-backup",
+                "-d", "CLI创建测试",
+            )
+            self.assertEqual(r.returncode, 0,
+                             f"create: {r.stderr}\nstdout: {r.stdout}")
+            self.assertIn("已创建", r.stdout)
+            self.assertIn("my-backup", r.stdout)
+            self.assertIn("CLI创建测试", r.stdout)
+
+            r_list = self._run_in(tmp, "backup", "list")
+            self.assertEqual(r_list.returncode, 0, f"list: {r_list.stderr}")
+            self.assertIn("my-backup", r_list.stdout)
+
+    def test_cli_backup_create_selective(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-sel-batch")
+            r = self._run_in(
+                tmp, "backup", "create",
+                "-n", "selective-bk",
+                "-d", "选择性备份",
+                "--no-rules",
+                "--no-presets",
+                "--no-snapshots",
+                "--no-compare",
+            )
+            self.assertEqual(r.returncode, 0,
+                             f"create selective: {r.stderr}\nstdout: {r.stdout}")
+            self.assertIn("selective-bk", r.stdout)
+            self.assertIn("批次历史", r.stdout)
+
+    def test_cli_backup_show(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-show-batch")
+            self._run_in(
+                tmp, "backup", "create",
+                "-n", "show-bk",
+                "-d", "显示测试",
+            )
+            r = self._run_in(tmp, "backup", "show", "show-bk")
+            self.assertEqual(r.returncode, 0, f"show: {r.stderr}")
+            self.assertIn("show-bk", r.stdout)
+            self.assertIn("显示测试", r.stdout)
+            self.assertIn("体积", r.stdout)
+            self.assertIn("创建时间", r.stdout)
+            self.assertIn("包含内容", r.stdout)
+            self.assertIn("来源摘要", r.stdout)
+
+    def test_cli_backup_show_not_found_exit_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run_in(tmp, "backup", "show", "no-such")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("不存在", r.stderr)
+
+    def test_cli_backup_create_conflict_exit_3(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-conf-batch")
+            self._run_in(
+                tmp, "backup", "create",
+                "-n", "conflict-bk",
+            )
+            r = self._run_in(
+                tmp, "backup", "create",
+                "-n", "conflict-bk",
+            )
+            self.assertEqual(r.returncode, 3, f"stderr={r.stderr}")
+            self.assertIn("已存在", r.stderr)
+
+    def test_cli_backup_create_empty_name_exit_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run_in(
+                tmp, "backup", "create",
+                "-n", "",
+            )
+            self.assertEqual(r.returncode, 2)
+
+    def test_cli_backup_export_and_import_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-exp-batch")
+            self._run_in(
+                tmp, "backup", "create",
+                "-n", "exp-bk",
+                "-d", "导出测试",
+            )
+            export_path = os.path.join(tmp, "exported.backup.json")
+            r_export = self._run_in(
+                tmp, "backup", "export", "exp-bk", export_path
+            )
+            self.assertEqual(r_export.returncode, 0, f"export: {r_export.stderr}")
+            self.assertIn("已导出", r_export.stdout)
+            self.assertTrue(os.path.exists(export_path))
+
+            with tempfile.TemporaryDirectory() as tmp2:
+                r_import = self._run_in(
+                    tmp2, "backup", "import", export_path
+                )
+                self.assertEqual(r_import.returncode, 0,
+                                 f"import: {r_import.stderr}\nstdout: {r_import.stdout}")
+                self.assertIn("已导入", r_import.stdout)
+                self.assertIn("exp-bk", r_import.stdout)
+
+                r_list2 = self._run_in(tmp2, "backup", "list")
+                self.assertEqual(r_list2.returncode, 0)
+                self.assertIn("exp-bk", r_list2.stdout)
+
+    def test_cli_backup_export_and_import_zip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-zip-batch")
+            self._run_in(
+                tmp, "backup", "create",
+                "-n", "zip-bk",
+                "-d", "ZIP导出测试",
+            )
+            export_path = os.path.join(tmp, "exported.zip")
+            r_export = self._run_in(
+                tmp, "backup", "export", "zip-bk", export_path,
+                "-f", "zip",
+            )
+            self.assertEqual(r_export.returncode, 0, f"export zip: {r_export.stderr}")
+            self.assertTrue(os.path.exists(export_path))
+            self.assertTrue(zipfile.is_zipfile(export_path))
+
+            with tempfile.TemporaryDirectory() as tmp2:
+                r_import = self._run_in(
+                    tmp2, "backup", "import", export_path
+                )
+                self.assertEqual(r_import.returncode, 0,
+                                 f"import zip: {r_import.stderr}\nstdout: {r_import.stdout}")
+                self.assertIn("已导入", r_import.stdout)
+
+    def test_cli_backup_import_conflict_strategies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-imp-conf-batch")
+            self._run_in(tmp, "backup", "create", "-n", "imp-conflict")
+            export_path = os.path.join(tmp, "conflict.backup.json")
+            self._run_in(tmp, "backup", "export", "imp-conflict", export_path)
+
+            r_refuse = self._run_in(
+                tmp, "backup", "import", export_path,
+                "--conflict", "refuse",
+            )
+            self.assertEqual(r_refuse.returncode, 3, f"refuse: {r_refuse.stderr}")
+            self.assertIn("已存在", r_refuse.stderr)
+
+            r_rename = self._run_in(
+                tmp, "backup", "import", export_path,
+                "--conflict", "rename",
+            )
+            self.assertEqual(r_rename.returncode, 0,
+                             f"rename: {r_rename.stderr}\nstdout: {r_rename.stdout}")
+            self.assertIn("imp-conflict_1", r_rename.stdout)
+
+            r_overwrite = self._run_in(
+                tmp, "backup", "import", export_path,
+                "--conflict", "overwrite",
+            )
+            self.assertEqual(r_overwrite.returncode, 0,
+                             f"overwrite: {r_overwrite.stderr}\nstdout: {r_overwrite.stdout}")
+            self.assertIn("imp-conflict", r_overwrite.stdout)
+
+    def test_cli_backup_import_bad_json_exit_5(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_path = os.path.join(tmp, "bad.json")
+            with open(bad_path, "w", encoding="utf-8") as f:
+                f.write("this is not json")
+            r = self._run_in(tmp, "backup", "import", bad_path)
+            self.assertEqual(r.returncode, 5)
+            self.assertIn("损坏", r.stderr)
+
+    def test_cli_backup_import_wrong_type_exit_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wrong_path = os.path.join(tmp, "wrong.json")
+            with open(wrong_path, "w", encoding="utf-8") as f:
+                json.dump({"type": "wrong", "manifest": {}, "data": {}}, f)
+            r = self._run_in(tmp, "backup", "import", wrong_path)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("格式错误", r.stderr)
+
+    def test_cli_backup_import_version_mismatch_exit_6(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            future_path = os.path.join(tmp, "future.json")
+            with open(future_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "type": "delivery-checker-backup",
+                    "format_version": 999,
+                    "manifest": {"name": "future"},
+                    "data": {},
+                }, f)
+            r = self._run_in(tmp, "backup", "import", future_path)
+            self.assertEqual(r.returncode, 6)
+            self.assertIn("版本不兼容", r.stderr)
+
+    def test_cli_backup_import_file_not_found_exit_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run_in(tmp, "backup", "import",
+                             os.path.join(tmp, "nonexistent.json"))
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("不存在", r.stderr)
+
+    def test_cli_backup_restore_dry_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-dryrun-batch")
+            self._run_in(tmp, "backup", "create", "-n", "dryrun-bk")
+            r = self._run_in(
+                tmp, "backup", "restore", "dryrun-bk",
+                "--dry-run",
+            )
+            self.assertEqual(r.returncode, 0,
+                             f"dry-run: {r.stderr}\nstdout: {r.stdout}")
+            self.assertIn("差异预览", r.stdout)
+            self.assertIn("dry-run", r.stdout)
+
+    def test_cli_backup_restore_with_confirm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-restore-batch")
+            self._run_in(tmp, "backup", "create", "-n", "restore-bk")
+            state_path = os.path.join(
+                tmp, ".delivery_check", "cli-restore-batch.state.json"
+            )
+            if os.path.exists(state_path):
+                os.remove(state_path)
+            r = self._run_in(
+                tmp, "backup", "restore", "restore-bk",
+                "--conflict", "skip",
+                input_text="y\n",
+            )
+            self.assertEqual(r.returncode, 0,
+                             f"restore: {r.stderr}\nstdout: {r.stdout}")
+            self.assertIn("恢复完成", r.stdout)
+
+    def test_cli_backup_restore_abort_on_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-abort-batch")
+            self._run_in(tmp, "backup", "create", "-n", "abort-bk")
+            state_path = os.path.join(
+                tmp, ".delivery_check", "cli-abort-batch.state.json"
+            )
+            with open(state_path, "r", encoding="utf-8") as f:
+                state_data = json.load(f)
+            for issue_id in state_data.get("issues", {}):
+                state_data["issues"][issue_id]["status"] = "passed"
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump(state_data, f, ensure_ascii=False, indent=2)
+            r = self._run_in(
+                tmp, "backup", "restore", "abort-bk",
+                "--conflict", "abort",
+                input_text="y\n",
+            )
+            self.assertEqual(r.returncode, 3, f"abort: {r.stderr}")
+            self.assertIn("冲突", r.stderr)
+
+    def test_cli_backup_restore_skip_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-skipconf-batch")
+            self._run_in(tmp, "backup", "create", "-n", "skipconf-bk")
+            r = self._run_in(
+                tmp, "backup", "restore", "skipconf-bk",
+                "--conflict", "skip",
+                input_text="y\n",
+            )
+            self.assertEqual(r.returncode, 0,
+                             f"skipconf: {r.stderr}\nstdout: {r.stdout}")
+            self.assertIn("恢复结果", r.stdout)
+
+    def test_cli_backup_restore_overwrite_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-owconf-batch")
+            self._run_in(tmp, "backup", "create", "-n", "owconf-bk")
+            r = self._run_in(
+                tmp, "backup", "restore", "owconf-bk",
+                "--conflict", "overwrite",
+                input_text="y\n",
+            )
+            self.assertEqual(r.returncode, 0,
+                             f"owconf: {r.stderr}\nstdout: {r.stdout}")
+            self.assertIn("恢复完成", r.stdout)
+
+    def test_cli_backup_restore_cancel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-cancel-batch")
+            self._run_in(tmp, "backup", "create", "-n", "cancel-bk")
+            r = self._run_in(
+                tmp, "backup", "restore", "cancel-bk",
+                "--conflict", "skip",
+                input_text="n\n",
+            )
+            self.assertEqual(r.returncode, 0,
+                             f"cancel: {r.stderr}\nstdout: {r.stdout}")
+            self.assertIn("已取消", r.stdout)
+
+    def test_cli_backup_delete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-del-batch")
+            self._run_in(tmp, "backup", "create", "-n", "del-bk")
+            r_del = self._run_in(tmp, "backup", "delete", "del-bk")
+            self.assertEqual(r_del.returncode, 0, f"delete: {r_del.stderr}")
+            self.assertIn("已删除", r_del.stdout)
+
+            r_show = self._run_in(tmp, "backup", "show", "del-bk")
+            self.assertEqual(r_show.returncode, 1)
+
+    def test_cli_backup_delete_not_found_exit_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run_in(tmp, "backup", "delete", "no-such")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("不存在", r.stderr)
+
+    def test_cli_backup_corrupted_exit_5(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-corrupt-batch")
+            self._run_in(tmp, "backup", "create", "-n", "corrupt-bk")
+            backup_path = os.path.join(
+                tmp, ".delivery_check", "backups", "corrupt-bk.backup.json"
+            )
+            with open(backup_path, "w", encoding="utf-8") as f:
+                f.write("{ broken json !!!")
+            r = self._run_in(tmp, "backup", "show", "corrupt-bk")
+            self.assertEqual(r.returncode, 5, f"stderr={r.stderr}")
+            self.assertIn("损坏", r.stderr)
+
+    def test_cli_backup_version_mismatch_exit_6(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-ver-batch")
+            self._run_in(tmp, "backup", "create", "-n", "ver-bk")
+            backup_path = os.path.join(
+                tmp, ".delivery_check", "backups", "ver-bk.backup.json"
+            )
+            with open(backup_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["format_version"] = 999
+            with open(backup_path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            r = self._run_in(tmp, "backup", "show", "ver-bk")
+            self.assertEqual(r.returncode, 6, f"stderr={r.stderr}")
+            self.assertIn("版本不兼容", r.stderr)
+
+    def test_cli_backup_persistence_across_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-persist-batch")
+            r_create = self._run_in(
+                tmp, "backup", "create",
+                "-n", "persist-bk",
+                "-d", "持久化测试",
+            )
+            self.assertEqual(r_create.returncode, 0)
+
+            r_list1 = self._run_in(tmp, "backup", "list")
+            self.assertEqual(r_list1.returncode, 0)
+            self.assertIn("persist-bk", r_list1.stdout)
+
+            r_show1 = self._run_in(tmp, "backup", "show", "persist-bk")
+            self.assertEqual(r_show1.returncode, 0)
+
+            r_list2 = self._run_in(tmp, "backup", "list")
+            self.assertEqual(r_list2.returncode, 0)
+            self.assertIn("persist-bk", r_list2.stdout)
+
+            r_show2 = self._run_in(tmp, "backup", "show", "persist-bk")
+            self.assertEqual(r_show2.returncode, 0)
+
+    def test_cli_backup_export_import_restore_chain(self):
+        """完整链路：创建 → 导出 → 另一目录导入 → 恢复"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+            self._setup_workspace(tmp_src, "chain-batch")
+            self._run_in(
+                tmp_src, "backup", "create",
+                "-n", "chain-bk",
+                "-d", "链路测试",
+            )
+            export_path = os.path.join(tmp_src, "chain.backup.json")
+            self._run_in(tmp_src, "backup", "export", "chain-bk", export_path)
+            self.assertTrue(os.path.exists(export_path))
+
+            r_import = self._run_in(tmp_dst, "backup", "import", export_path)
+            self.assertEqual(r_import.returncode, 0,
+                             f"import: {r_import.stderr}\nstdout: {r_import.stdout}")
+
+            r_restore = self._run_in(
+                tmp_dst, "backup", "restore", "chain-bk",
+                "--conflict", "skip",
+                input_text="y\n",
+            )
+            self.assertEqual(r_restore.returncode, 0,
+                             f"restore: {r_restore.stderr}\nstdout: {r_restore.stdout}")
+            self.assertIn("恢复", r_restore.stdout)
+
+    def test_cli_backup_list_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._run_in(tmp, "backup", "list")
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("暂无备份", r.stdout)
+
+    def test_cli_backup_does_not_pollute_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_workspace(tmp, "cli-clean-batch")
+            self._run_in(
+                tmp, "mark", "cli-clean-batch", "passed",
+                "--ids", "1", "-r", "tester", "-n", "test",
+            )
+            state_file = os.path.join(
+                tmp, ".delivery_check", "cli-clean-batch.state.json"
+            )
+            with open(state_file, "rb") as f:
+                before_hash = hashlib.sha256(f.read()).hexdigest()
+
+            self._run_in(tmp, "backup", "create", "-n", "clean-bk")
+            with open(state_file, "rb") as f:
+                after_hash = hashlib.sha256(f.read()).hexdigest()
+            self.assertEqual(before_hash, after_hash,
+                             "备份操作修改了原批次状态文件！")
+
+            export_path = os.path.join(tmp, "clean.backup.json")
+            self._run_in(tmp, "backup", "export", "clean-bk", export_path)
+            with open(state_file, "rb") as f:
+                after_export_hash = hashlib.sha256(f.read()).hexdigest()
+            self.assertEqual(before_hash, after_export_hash,
+                             "备份导出修改了原批次状态文件！")
 
 
 if __name__ == "__main__":
