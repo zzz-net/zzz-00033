@@ -213,6 +213,139 @@ dc.bat review "交付样例-2026-Q2"
 
 ---
 
+## 📦 团队规则包（Rule Package）
+
+**场景**：团队有一套常用的扫描规则，希望在不同项目、不同资料包之间复用。
+**方案**：将 YAML/JSON 规则保存为**命名规则包，支持跨目录导入导出，版本化管理。
+
+### 规则包完整工作流
+
+```
+        项目 A 目录                    共享文件              项目 B 目录
+┌─────────────────────┐          ┌────────────┐          ┌─────────────────────┐
+│  1. rule-save    │ ───────▶ │ export │ ───────▶ │  3. rule-import   │
+│  保存为规则包     │          │ .rulepkg│          │  导入规则包      │
+│  (name+version) │          └────────┘          │                   │
+└─────────────────────┘                              └─────────────────────┘
+          │                                                │
+          ▼                                                ▼
+┌─────────────────────┐                      ┌─────────────────────┐
+│  2. rule-list   │                      │  4. rule-list   │
+│  查看本地规则包   │                      │  查看本地规则包   │
+└─────────────────────┘                      └─────────────────────┘
+```
+
+### 步骤 1：保存规则包
+
+把当前的 YAML/JSON 规则保存为带名称、版本、说明的规则包：
+
+```bash
+dc.bat rule-save examples\rules.yaml ^
+  --name "standard-delivery" ^
+  --version "1.0.0" ^
+  --description "团队标准交付检查规则"
+```
+
+**输出**：
+```
+✅ 规则包已保存
+   名称: standard-delivery
+   版本: 1.0.0
+   说明: 团队标准交付检查规则
+   规则数: 9 条必需文件规则
+```
+
+### 步骤 2：查看已保存的规则包
+
+```bash
+dc.bat rule-list
+```
+
+**输出**：
+```
+  #  名称                    版本         规则数  说明
+------------------------------------------------------------------------------------------
+  1  standard-delivery     1.0.0          9  团队标准交付检查规则
+     更新: 2026-06-12T12:11:44
+```
+
+### 步骤 3：导出规则包
+
+```bash
+# 导出到指定文件
+dc.bat rule-export standard-delivery 1.0.0 standard-delivery.rulepkg.json
+
+# 使用默认文件名（<name>_<version>.rulepkg.json）
+dc.bat rule-export standard-delivery 1.0.0
+```
+
+导出的 `.rulepkg.json` 是单文件包含完整的规则包信息，可通过邮件、Git 等方式分享。
+
+### 步骤 4：在另一个目录导入
+
+```bash
+# 基本导入（使用原名称版本）
+dc.bat rule-import standard-delivery.rulepkg.json
+
+# 导入时重命名（避免冲突）
+dc.bat rule-import standard-delivery.rulepkg.json ^
+  --rename-name "standard-delivery" ^
+  --rename-version "1.1.0"
+
+# 强制覆盖已存在的同名同版本
+dc.bat rule-import standard-delivery.rulepkg.json --force
+```
+
+### 冲突处理示例：
+
+**场景 A：同名同版本已存在**
+```
+⚠️  规则包「standard-delivery」版本「1.0.0」已存在。
+使用 --force 覆盖，或使用 --rename 保存为其他名称/版本。
+   （原有规则包未被修改）
+```
+退出码：3
+
+**场景 B：导入坏 JSON 文件**
+```
+❌ 规则包格式错误: JSON 解析失败 bad.json: Expecting property name...
+```
+退出码：2，且**原有规则包不受任何影响**
+
+### 规则包文件结构
+
+所有规则包保存在当前工作目录的 `.delivery_check/rule_packages/ 子目录：
+
+```
+.delivery_check/
+  rule_packages/
+    index.json                 # 持久化索引（原子写入）
+    standard-delivery_1.0.0.json   # 规则包本体
+```
+
+**索引文件**：记录所有规则包的元数据（名称、版本、说明、创建时间、规则数量），重启后仍可列出。
+
+**原子写入保证**：所有写入操作先写 `.tmp` 再 `shutil.move` 替换，中途崩溃不会损坏文件。
+
+### 规则包导出文件格式
+
+```json
+{
+  "format_version": 1,
+  "type": "delivery-checker-rule-package",
+  "package": {
+    "name": "standard-delivery",
+    "version": "1.0.0",
+    "description": "团队标准交付检查规则",
+    "created_at": "2026-06-12T12:11:44",
+    "updated_at": "2026-06-12T12:11:44",
+    "rules": { ... 完整的 CheckRules 对象 ... }
+  }
+}
+```
+
+---
+
 ## ⚠️ 边界场景提示
 
 所有边界场景都**不会清除既有批次状态**。
@@ -395,6 +528,10 @@ metadata:
 | `dc.bat undo <batch> [--steps N]` | 撤销最近 N 步复核 |
 | `dc.bat export <batch> [输出文件] [-f html\|csv\|auto]` | 导出报告 |
 | `dc.bat list` | 列出所有历史批次 |
+| `dc.bat rule-save <rules> --name <name> --version <ver> [--description <desc>] [--force]` | 保存规则为命名规则包 |
+| `dc.bat rule-list` | 列出所有已保存的规则包 |
+| `dc.bat rule-export <name> <version> [output]` | 导出规则包为可分享文件 |
+| `dc.bat rule-import <file> [--force] [--rename-name <n>] [--rename-version <v>]` | 导入规则包 |
 | `dc.bat --no-color ...` | 禁用彩色输出（日志/管道场景） |
 
 **退出码说明**：
@@ -402,10 +539,10 @@ metadata:
 | 退出码 | 含义 |
 |--------|------|
 | 0 | 成功 |
-| 1 | 目录不存在 / 运行时错误 |
-| 2 | 规则配置格式/语义错误 |
-| 3 | 重复扫描、规则/目录不一致（拒绝执行，未修改旧状态） |
-| 4 | 状态文件读写失败 |
+| 1 | 目录不存在 / 文件不存在 / 运行时错误 |
+| 2 | 规则配置格式/语义错误 / 规则包格式错误 |
+| 3 | 重复扫描 / 规则/目录不一致 / 规则包同名同版本冲突（拒绝执行，未修改旧状态） |
+| 4 | 状态文件读写失败 / 权限不足 |
 | 130 | Ctrl+C 中断 |
 
 ---

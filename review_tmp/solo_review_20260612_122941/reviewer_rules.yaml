@@ -1,0 +1,6 @@
+batch_name: "reviewer-batch"
+root_alias: "reviewer-data"
+required_files:
+  - "README.md"
+  - pattern: "docs/design.md"
+    description: "设计文档"

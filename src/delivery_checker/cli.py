@@ -25,6 +25,16 @@ from .state import (
     create_or_resume_batch,
     list_batches,
 )
+from .rule_pkg import (
+    RulePkgConflictError,
+    RulePkgFormatError,
+    RulePkgNotFoundError,
+    RulePkgPermissionError,
+    export_rule_package,
+    import_rule_package,
+    list_rule_packages,
+    save_rule_package,
+)
 
 
 C_RESET = "\033[0m"
@@ -512,6 +522,123 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rule_save(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    rules_path = os.path.abspath(args.rules)
+
+    try:
+        rules = parse_rules_file(rules_path)
+    except ConfigError as e:
+        print(_color(f"❌ 配置格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+
+    try:
+        pkg = save_rule_package(
+            base_dir=base_dir,
+            name=args.name,
+            version=args.version,
+            description=args.description,
+            rules=rules,
+            force=args.force,
+        )
+    except RulePkgFormatError as e:
+        print(_color(f"❌ 规则包格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except RulePkgConflictError as e:
+        print(_color(f"⚠️  {e}", C_YELLOW, color), file=sys.stderr)
+        return 3
+    except RulePkgPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    print(_color(f"✅ 规则包已保存", C_GREEN, color))
+    print(f"   名称: {_color(pkg.name, C_BOLD, color)}")
+    print(f"   版本: {_color(pkg.version, C_CYAN, color)}")
+    print(f"   说明: {pkg.description}")
+    print(f"   规则数: {len(rules.required_files)} 条必需文件规则")
+    print(f"   创建时间: {pkg.created_at}")
+    return 0
+
+
+def cmd_rule_list(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    packages = list_rule_packages(base_dir)
+    if not packages:
+        print(_color("（暂无规则包）", C_GRAY, color))
+        print(_color("使用 rule-save 子命令保存第一个规则包", C_GRAY, color))
+        return 0
+    print(_color(f"{'#':>3}  {'名称':<20}  {'版本':<12}  {'规则数':>6}  说明", C_BOLD, color))
+    print(_color("-" * 90, C_GRAY, color))
+    for idx, pkg in enumerate(packages, 1):
+        name = _color(pkg["name"][:20], C_CYAN, color)
+        version = _color(pkg["version"][:12], C_YELLOW, color)
+        rule_count = str(pkg.get("rule_count", 0))
+        desc = pkg.get("description", "")
+        print(f"{idx:>3}  {name:<20}  {version:<12}  {rule_count:>6}  {desc}")
+        if pkg.get("updated_at"):
+            print(f"     {_color('更新: ' + pkg['updated_at'], C_GRAY, color)}")
+    return 0
+
+
+def cmd_rule_export(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    output = args.output or f"{args.name}_{args.version}.rulepkg.json"
+    try:
+        saved = export_rule_package(
+            base_dir=base_dir,
+            name=args.name,
+            version=args.version,
+            output_path=output,
+        )
+    except RulePkgNotFoundError as e:
+        print(_color(f"❌ 规则包不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except RulePkgFormatError as e:
+        print(_color(f"❌ 规则包格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except RulePkgPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    print(_color(f"📄 规则包已导出: {saved}", C_GREEN, color))
+    return 0
+
+
+def cmd_rule_import(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    input_path = os.path.abspath(args.input)
+    try:
+        pkg = import_rule_package(
+            base_dir=base_dir,
+            input_path=input_path,
+            force=args.force,
+            rename_name=args.rename_name,
+            rename_version=args.rename_version,
+        )
+    except RulePkgNotFoundError as e:
+        print(_color(f"❌ 文件不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except RulePkgFormatError as e:
+        print(_color(f"❌ 规则包格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except RulePkgConflictError as e:
+        print(_color(f"⚠️  {e}", C_YELLOW, color), file=sys.stderr)
+        print(_color("   （原有规则包未被修改）", C_GRAY, color), file=sys.stderr)
+        return 3
+    except RulePkgPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    print(_color(f"✅ 规则包已导入", C_GREEN, color))
+    print(f"   名称: {_color(pkg.name, C_BOLD, color)}")
+    print(f"   版本: {_color(pkg.version, C_CYAN, color)}")
+    print(f"   说明: {pkg.description}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="delivery-checker",
@@ -560,6 +687,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_list = sub.add_parser("list", help="列出所有历史批次")
     p_list.set_defaults(func=cmd_list)
+
+    p_rule_save = sub.add_parser("rule-save", help="将当前 YAML/JSON 规则保存为命名规则包")
+    p_rule_save.add_argument("rules", help="规则文件路径 (.yaml/.yml/.json)")
+    p_rule_save.add_argument("--name", "-n", required=True, help="规则包名称")
+    p_rule_save.add_argument("--version", "-v", required=True, help="规则包版本 (如 1.0.0)")
+    p_rule_save.add_argument("--description", "-d", default="", help="规则包说明")
+    p_rule_save.add_argument("--force", "-f", action="store_true",
+                             help="强制覆盖已存在的同名同版本规则包")
+    p_rule_save.set_defaults(func=cmd_rule_save)
+
+    p_rule_list = sub.add_parser("rule-list", help="列出所有已保存的规则包")
+    p_rule_list.set_defaults(func=cmd_rule_list)
+
+    p_rule_export = sub.add_parser("rule-export", help="导出规则包为可分享的 JSON 文件")
+    p_rule_export.add_argument("name", help="规则包名称")
+    p_rule_export.add_argument("version", help="规则包版本")
+    p_rule_export.add_argument("output", nargs="?", help="导出文件路径 (默认: <name>_<version>.rulepkg.json)")
+    p_rule_export.set_defaults(func=cmd_rule_export)
+
+    p_rule_import = sub.add_parser("rule-import", help="从导出文件导入规则包")
+    p_rule_import.add_argument("input", help="规则包导出文件路径 (.rulepkg.json)")
+    p_rule_import.add_argument("--force", "-f", action="store_true",
+                               help="强制覆盖已存在的同名同版本规则包")
+    p_rule_import.add_argument("--rename-name", help="重命名导入的规则包名称")
+    p_rule_import.add_argument("--rename-version", help="重命名导入的规则包版本")
+    p_rule_import.set_defaults(func=cmd_rule_import)
 
     return parser
 
