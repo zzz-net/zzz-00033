@@ -1,0 +1,217 @@
+{
+  "batch_name": "prefix-交付样例-2026-Q2",
+  "data_dir": "D:\\data",
+  "rules": {
+    "batch_name": "prefix-交付样例-2026-Q2",
+    "root_alias": "交付资料包",
+    "required_files": [
+      {
+        "pattern": "README.md",
+        "description": "项目说明文档",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "docs/**/*.md",
+        "description": "设计与需求文档（至少一个）",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "docs/requirements.docx",
+        "description": "签字版需求文档（非可选）",
+        "optional": false,
+        "naming_rule": "signature-doc",
+        "expiry_date": "2026-06-01",
+        "max_matches": null
+      },
+      {
+        "pattern": "src/**/*.py",
+        "description": "Python 源码目录（必需）",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "tests/**/*.py",
+        "description": "单元测试文件",
+        "optional": true,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "build/report*.pdf",
+        "description": "最终交付测试报告",
+        "optional": false,
+        "naming_rule": "report-date",
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "config/config.yaml",
+        "description": "部署配置模板",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "CHANGELOG.md",
+        "description": "版本变更记录",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "deliverables/slot_*.txt",
+        "description": "交付槽位文件（仅允许 1 份）",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": 1
+      }
+    ],
+    "naming_rules": [
+      {
+        "pattern": "docs/requirements.docx",
+        "regex": "^requirements_(v\\d{4}\\.\\d{2})_签字版\\.docx$",
+        "name": "signature-doc",
+        "description": "文件名必须形如 requirements_v2026.02_签字版.docx"
+      },
+      {
+        "pattern": "build/report*.pdf",
+        "regex": "^test_report_(\\d{8})\\.pdf$",
+        "name": "report-date",
+        "description": "文件名必须形如 test_report_20260612.pdf"
+      }
+    ],
+    "ignore_patterns": [
+      "**/.git/**",
+      "**/__pycache__/**",
+      "**/node_modules/**",
+      "**/*.log",
+      "**/Thumbs.db",
+      "**/.DS_Store"
+    ],
+    "expiry_date": "2026-01-01",
+    "metadata": {
+      "client": "示例客户",
+      "project": "交付样例项目",
+      "version": "1.0.0",
+      "owner": "交付组"
+    },
+    "source_path": "D:\\rules.yaml",
+    "source_hash": "93547640a8d3d3cd"
+  },
+  "rules_hash": "93547640a8d3d3cd",
+  "issues": {
+    "cd032e4f85dd": {
+      "id": "cd032e4f85dd",
+      "type": "missing",
+      "path": "docs/**/*.md",
+      "message": "缺少必需文件或目录匹配项: docs/**/*.md（设计与需求文档（至少一个））",
+      "detail": "设计与需求文档（至少一个）",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "必需文件缺失",
+      "status_label": "待复核"
+    },
+    "d486ca46d320": {
+      "id": "d486ca46d320",
+      "type": "missing",
+      "path": "docs/requirements.docx",
+      "message": "缺少必需文件或目录匹配项: docs/requirements.docx（签字版需求文档（非可选））",
+      "detail": "签字版需求文档（非可选）",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "必需文件缺失",
+      "status_label": "待复核"
+    },
+    "098f4708d6ca": {
+      "id": "098f4708d6ca",
+      "type": "missing",
+      "path": "src/**/*.py",
+      "message": "缺少必需文件或目录匹配项: src/**/*.py（Python 源码目录（必需））",
+      "detail": "Python 源码目录（必需）",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "必需文件缺失",
+      "status_label": "待复核"
+    },
+    "185f3369ec25": {
+      "id": "185f3369ec25",
+      "type": "missing",
+      "path": "build/report*.pdf",
+      "message": "缺少必需文件或目录匹配项: build/report*.pdf（最终交付测试报告）",
+      "detail": "最终交付测试报告",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "必需文件缺失",
+      "status_label": "待复核"
+    },
+    "af627d3f24b6": {
+      "id": "af627d3f24b6",
+      "type": "missing",
+      "path": "config/config.yaml",
+      "message": "缺少必需文件或目录匹配项: config/config.yaml（部署配置模板）",
+      "detail": "部署配置模板",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "必需文件缺失",
+      "status_label": "待复核"
+    },
+    "f978968913c5": {
+      "id": "f978968913c5",
+      "type": "missing",
+      "path": "CHANGELOG.md",
+      "message": "缺少必需文件或目录匹配项: CHANGELOG.md（版本变更记录）",
+      "detail": "版本变更记录",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "必需文件缺失",
+      "status_label": "待复核"
+    },
+    "998ec6d58e67": {
+      "id": "998ec6d58e67",
+      "type": "missing",
+      "path": "deliverables/slot_*.txt",
+      "message": "缺少必需文件或目录匹配项: deliverables/slot_*.txt（交付槽位文件（仅允许 1 份））",
+      "detail": "交付槽位文件（仅允许 1 份）",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "必需文件缺失",
+      "status_label": "待复核"
+    }
+  },
+  "undo_stack": [],
+  "created_at": "2026-06-12T22:06:02",
+  "updated_at": "2026-06-12T22:06:02"
+}

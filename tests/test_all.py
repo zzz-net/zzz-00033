@@ -121,6 +121,22 @@ from delivery_checker.backup import (
     preview_restore,
     show_backup,
 )
+from delivery_checker.plan import (
+    Plan,
+    PlanTaskItem,
+    PlanConflictError,
+    PlanFormatError,
+    PlanNotFoundError,
+    PlanPermissionError,
+    PlanExecutionError,
+    delete_plan,
+    export_plan,
+    get_plan,
+    import_plan,
+    list_plans,
+    run_plan,
+    save_plan,
+)
 
 
 class TestGlobMatching(unittest.TestCase):
@@ -5018,6 +5034,1408 @@ class TestBackupCliEndToEnd(unittest.TestCase):
                 after_export_hash = hashlib.sha256(f.read()).hexdigest()
             self.assertEqual(before_hash, after_export_hash,
                              "备份导出修改了原批次状态文件！")
+
+
+class TestPlanTaskItem(unittest.TestCase):
+    """PlanTaskItem 基本验证测试"""
+
+    def test_valid_task_creation(self):
+        task = PlanTaskItem.new("rules.yaml", "data/")
+        self.assertEqual(task.rules_path, "rules.yaml")
+        self.assertEqual(task.data_dir, "data/")
+        self.assertEqual(task.name, "")
+        self.assertEqual(task.description, "")
+
+    def test_task_with_name_and_desc(self):
+        task = PlanTaskItem.new(
+            rules_path="rules.yaml",
+            data_dir="data/",
+            name="主项目扫描",
+            description="每日交付检查",
+        )
+        self.assertEqual(task.name, "主项目扫描")
+        self.assertEqual(task.description, "每日交付检查")
+
+    def test_empty_rules_path_rejected(self):
+        with self.assertRaises(PlanFormatError):
+            PlanTaskItem.new("", "data/")
+
+    def test_empty_data_dir_rejected(self):
+        with self.assertRaises(PlanFormatError):
+            PlanTaskItem.new("rules.yaml", "")
+
+    def test_whitespace_paths_rejected(self):
+        with self.assertRaises(PlanFormatError):
+            PlanTaskItem.new("  ", "data/")
+        with self.assertRaises(PlanFormatError):
+            PlanTaskItem.new("rules.yaml", "   ")
+
+    def test_to_dict_and_from_dict(self):
+        task1 = PlanTaskItem.new(
+            rules_path="project_a/rules.yaml",
+            data_dir="project_a/data",
+            name="项目A",
+            description="项目A的交付检查",
+        )
+        d = task1.to_dict()
+        self.assertEqual(d["rules_path"], "project_a/rules.yaml")
+        self.assertEqual(d["data_dir"], "project_a/data")
+
+        task2 = PlanTaskItem.from_dict(d)
+        self.assertEqual(task2.rules_path, task1.rules_path)
+        self.assertEqual(task2.data_dir, task1.data_dir)
+        self.assertEqual(task2.name, task1.name)
+        self.assertEqual(task2.description, task1.description)
+
+    def test_from_dict_missing_fields(self):
+        with self.assertRaises(PlanFormatError):
+            PlanTaskItem.from_dict({"data_dir": "data/"})
+        with self.assertRaises(PlanFormatError):
+            PlanTaskItem.from_dict({"rules_path": "rules.yaml"})
+        with self.assertRaises(PlanFormatError):
+            PlanTaskItem.from_dict("not a dict")
+
+
+class TestPlanCore(unittest.TestCase):
+    """计划核心功能：创建、列表、获取、删除"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+    EXAMPLE_RULES = os.path.join(ROOT, "examples", "rules.yaml")
+    EXAMPLE_DATA = os.path.join(ROOT, "examples", "sample_data")
+
+    def _make_tasks(self, count=2):
+        tasks = []
+        for i in range(count):
+            tasks.append(PlanTaskItem.new(
+                rules_path=self.EXAMPLE_RULES,
+                data_dir=self.EXAMPLE_DATA,
+                name=f"任务{i+1}",
+                description=f"第{i+1}个任务",
+            ))
+        return tasks
+
+    def test_create_and_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = self._make_tasks(2)
+            plan = save_plan(
+                base_dir=tmp,
+                name="daily-check",
+                description="每日交付检查",
+                batch_prefix="daily-",
+                tasks=tasks,
+            )
+            self.assertEqual(plan.name, "daily-check")
+            self.assertEqual(plan.description, "每日交付检查")
+            self.assertEqual(plan.batch_prefix, "daily-")
+            self.assertEqual(len(plan.tasks), 2)
+            self.assertTrue(plan.created_at)
+            self.assertTrue(plan.updated_at)
+
+            plans = list_plans(tmp)
+            self.assertEqual(len(plans), 1)
+            self.assertEqual(plans[0]["name"], "daily-check")
+            self.assertEqual(plans[0]["task_count"], 2)
+            self.assertEqual(plans[0]["batch_prefix"], "daily-")
+
+    def test_get_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = self._make_tasks(1)
+            save_plan(tmp, "test-plan", "测试计划", "prefix-", tasks)
+
+            plan = get_plan(tmp, "test-plan")
+            self.assertEqual(plan.name, "test-plan")
+            self.assertEqual(plan.description, "测试计划")
+            self.assertEqual(plan.batch_prefix, "prefix-")
+            self.assertEqual(len(plan.tasks), 1)
+            self.assertEqual(plan.tasks[0].name, "任务1")
+
+    def test_delete_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = self._make_tasks(1)
+            save_plan(tmp, "to-delete", "", "", tasks)
+            self.assertEqual(len(list_plans(tmp)), 1)
+
+            delete_plan(tmp, "to-delete")
+            self.assertEqual(len(list_plans(tmp)), 0)
+
+            with self.assertRaises(PlanNotFoundError):
+                get_plan(tmp, "to-delete")
+
+    def test_duplicate_name_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = self._make_tasks(1)
+            save_plan(tmp, "conflict-plan", "", "", tasks)
+
+            with self.assertRaises(PlanConflictError):
+                save_plan(tmp, "conflict-plan", "新描述", "", tasks)
+
+    def test_force_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = self._make_tasks(1)
+            plan1 = save_plan(tmp, "overwrite-me", "旧描述", "", tasks)
+            old_created_at = plan1.created_at
+            time.sleep(1.1)
+
+            tasks2 = self._make_tasks(3)
+            plan2 = save_plan(
+                tmp, "overwrite-me", "新描述", "new-", tasks2, force=True
+            )
+            self.assertEqual(plan2.description, "新描述")
+            self.assertEqual(plan2.batch_prefix, "new-")
+            self.assertEqual(len(plan2.tasks), 3)
+            self.assertEqual(plan2.created_at, old_created_at)
+            self.assertGreater(plan2.updated_at, old_created_at)
+
+    def test_empty_name_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = self._make_tasks(1)
+            with self.assertRaises(PlanFormatError):
+                save_plan(tmp, "", "", "", tasks)
+            with self.assertRaises(PlanFormatError):
+                save_plan(tmp, "  ", "", "", tasks)
+
+    def test_empty_tasks_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(PlanFormatError):
+                save_plan(tmp, "test", "", "", [])
+
+    def test_delete_nonexistent_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(PlanNotFoundError):
+                delete_plan(tmp, "does-not-exist")
+
+    def test_get_nonexistent_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(PlanNotFoundError):
+                get_plan(tmp, "does-not-exist")
+
+
+class TestPlanPersistence(unittest.TestCase):
+    """跨重启持久性测试"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+    EXAMPLE_RULES = os.path.join(ROOT, "examples", "rules.yaml")
+    EXAMPLE_DATA = os.path.join(ROOT, "examples", "sample_data")
+
+    def test_persistence_across_reload(self):
+        """保存后重新 list 和 get，模拟重启"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = [
+                PlanTaskItem.new(
+                    rules_path=self.EXAMPLE_RULES,
+                    data_dir=self.EXAMPLE_DATA,
+                    name="项目A",
+                    description="项目A的交付检查",
+                ),
+                PlanTaskItem.new(
+                    rules_path=self.EXAMPLE_RULES,
+                    data_dir=self.EXAMPLE_DATA,
+                    name="项目B",
+                    description="项目B的交付检查",
+                ),
+            ]
+
+            # 第一次"启动"：保存
+            plan1 = save_plan(
+                tmp, "persistent-plan", "持久化测试", "daily-", tasks
+            )
+            self.assertEqual(len(list_plans(tmp)), 1)
+
+            # 模拟"重启"：重新调用 list 和 get（不使用任何内存缓存）
+            plans = list_plans(tmp)
+            self.assertEqual(len(plans), 1)
+            self.assertEqual(plans[0]["name"], "persistent-plan")
+            self.assertEqual(plans[0]["task_count"], 2)
+
+            plan2 = get_plan(tmp, "persistent-plan")
+            self.assertEqual(plan2.name, plan1.name)
+            self.assertEqual(plan2.description, plan1.description)
+            self.assertEqual(plan2.batch_prefix, plan1.batch_prefix)
+            self.assertEqual(plan2.created_at, plan1.created_at)
+            self.assertEqual(len(plan2.tasks), 2)
+            self.assertEqual(plan2.tasks[0].name, "项目A")
+            self.assertEqual(plan2.tasks[1].name, "项目B")
+
+    def test_multiple_plans_persisted(self):
+        """多个计划共存，重启后都可见"""
+        with tempfile.TemporaryDirectory() as tmp:
+            for i in range(3):
+                tasks = [PlanTaskItem.new(self.EXAMPLE_RULES, self.EXAMPLE_DATA)]
+                save_plan(tmp, f"plan-{i}", f"计划{i}", f"prefix{i}-", tasks)
+
+            # 重启后
+            plans = list_plans(tmp)
+            self.assertEqual(len(plans), 3)
+            names = sorted(p["name"] for p in plans)
+            self.assertEqual(names, ["plan-0", "plan-1", "plan-2"])
+
+            for i in range(3):
+                plan = get_plan(tmp, f"plan-{i}")
+                self.assertEqual(plan.description, f"计划{i}")
+                self.assertEqual(plan.batch_prefix, f"prefix{i}-")
+
+    def test_index_corruption_readonly_safety(self):
+        """索引文件损坏时只读操作不破坏现有文件"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = [PlanTaskItem.new(self.EXAMPLE_RULES, self.EXAMPLE_DATA)]
+            save_plan(tmp, "safe-plan", "", "", tasks)
+
+            from delivery_checker.plan import _get_index_path, _get_plan_path
+            index_path = _get_index_path(tmp)
+            plan_path = _get_plan_path(tmp, "safe-plan")
+
+            # 破坏索引
+            with open(index_path, "w", encoding="utf-8") as f:
+                f.write("{ this is not valid json !!!")
+
+            # 读取时报错，但不修改任何文件
+            with self.assertRaises(PlanFormatError):
+                list_plans(tmp)
+
+            # 计划文件仍然存在
+            self.assertTrue(os.path.exists(plan_path))
+
+    def test_plan_file_corruption(self):
+        """计划文件损坏时给出明确错误"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = [PlanTaskItem.new(self.EXAMPLE_RULES, self.EXAMPLE_DATA)]
+            save_plan(tmp, "corrupt-me", "", "", tasks)
+
+            from delivery_checker.plan import _get_plan_path
+            plan_path = _get_plan_path(tmp, "corrupt-me")
+
+            with open(plan_path, "w", encoding="utf-8") as f:
+                f.write("{ bad json !!!")
+
+            with self.assertRaises(PlanFormatError):
+                get_plan(tmp, "corrupt-me")
+
+
+class TestPlanPathResolution(unittest.TestCase):
+    """路径解析和验证测试"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+    EXAMPLE_RULES = os.path.join(ROOT, "examples", "rules.yaml")
+    EXAMPLE_DATA = os.path.join(ROOT, "examples", "sample_data")
+
+    def test_relative_paths_resolved_against_workspace(self):
+        """相对路径按计划文件所在工作区解析"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 创建相对路径的规则文件和数据目录
+            workspace = tmp
+            rules_rel = "project_a/rules.yaml"
+            data_rel = "project_a/data"
+
+            os.makedirs(os.path.join(workspace, "project_a"))
+            with open(os.path.join(workspace, rules_rel), "w", encoding="utf-8") as f:
+                f.write("""
+batch_name: "test-batch"
+root_alias: "test"
+required_files:
+  - "README.md"
+""")
+            os.makedirs(os.path.join(workspace, data_rel))
+            with open(os.path.join(workspace, data_rel, "README.md"), "w") as f:
+                f.write("test")
+
+            tasks = [PlanTaskItem.new(rules_rel, data_rel, "任务1")]
+            plan = save_plan(workspace, "path-test", "", "", tasks)
+
+            resolved = plan.resolve_paths(workspace)
+            self.assertEqual(len(resolved), 1)
+            abs_rules, abs_data = resolved[0]
+            self.assertEqual(abs_rules, os.path.abspath(os.path.join(workspace, rules_rel)))
+            self.assertEqual(abs_data, os.path.abspath(os.path.join(workspace, data_rel)))
+
+            errors = plan.validate_paths(workspace)
+            self.assertEqual(len(errors), 0)
+
+    def test_missing_rules_file_detected(self):
+        """缺失规则文件时给出明确错误"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = [PlanTaskItem.new("nonexistent.yaml", self.EXAMPLE_DATA)]
+            plan = Plan.new("missing-rules", "", "", tasks, workspace_dir=tmp)
+
+            errors = plan.validate_paths(tmp)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("不存在", errors[0][1])
+            self.assertIn("nonexistent.yaml", errors[0][1])
+
+    def test_missing_data_dir_detected(self):
+        """缺失资料目录时给出明确错误"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = [PlanTaskItem.new(self.EXAMPLE_RULES, "nonexistent_dir")]
+            plan = Plan.new("missing-data", "", "", tasks, workspace_dir=tmp)
+
+            errors = plan.validate_paths(tmp)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("不存在", errors[0][1])
+            self.assertIn("nonexistent_dir", errors[0][1])
+
+    def test_bad_rules_format_detected(self):
+        """规则格式错误在运行时给出明确错误"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_rules = os.path.join(tmp, "bad.yaml")
+            with open(bad_rules, "w", encoding="utf-8") as f:
+                f.write("::: invalid yaml :::\n")
+            tasks = [PlanTaskItem.new(bad_rules, self.EXAMPLE_DATA)]
+            plan = Plan.new("bad-rules", "", "", tasks, workspace_dir=tmp)
+
+            errors = plan.validate_paths(tmp)
+            self.assertEqual(len(errors), 0)
+
+            save_plan(tmp, plan.name, plan.description, plan.batch_prefix, plan.tasks)
+
+            summary = run_plan(tmp, plan.name)
+            self.assertEqual(summary["failed"], 1)
+            self.assertEqual(summary["success"], 0)
+            self.assertIn("规则文件解析失败", summary["results"][0]["error_message"])
+
+    def test_path_not_directory_detected(self):
+        """data_dir 指向文件而非目录时检测到"""
+        with tempfile.TemporaryDirectory() as tmp:
+            not_a_dir = os.path.join(tmp, "file.txt")
+            with open(not_a_dir, "w") as f:
+                f.write("not a dir")
+            tasks = [PlanTaskItem.new(self.EXAMPLE_RULES, not_a_dir)]
+            plan = Plan.new("not-dir", "", "", tasks, workspace_dir=tmp)
+
+            errors = plan.validate_paths(tmp)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("不是目录", errors[0][1])
+
+    def test_multiple_path_errors_reported(self):
+        """多个路径错误同时报告"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = [
+                PlanTaskItem.new("missing1.yaml", self.EXAMPLE_DATA),
+                PlanTaskItem.new(self.EXAMPLE_RULES, "missing_dir"),
+                PlanTaskItem.new("missing2.yaml", "missing_dir2"),
+            ]
+            plan = Plan.new("multi-error", "", "", tasks, workspace_dir=tmp)
+
+            errors = plan.validate_paths(tmp)
+            self.assertEqual(len(errors), 4)
+            indices = [e[0] for e in errors]
+            self.assertEqual(indices, [0, 1, 2, 2])
+
+
+class TestPlanImportExport(unittest.TestCase):
+    """导入导出往返测试"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+    EXAMPLE_RULES = os.path.join(ROOT, "examples", "rules.yaml")
+    EXAMPLE_DATA = os.path.join(ROOT, "examples", "sample_data")
+
+    def _make_plan(self, base_dir, name="export-plan", task_count=2):
+        tasks = []
+        for i in range(task_count):
+            tasks.append(PlanTaskItem.new(
+                rules_path=self.EXAMPLE_RULES,
+                data_dir=self.EXAMPLE_DATA,
+                name=f"任务{i+1}",
+                description=f"第{i+1}个任务",
+            ))
+        return save_plan(
+            base_dir=base_dir,
+            name=name,
+            description="导出测试计划",
+            batch_prefix="export-",
+            tasks=tasks,
+        )
+
+    def test_export_import_roundtrip(self):
+        """导出后在另一个目录导入，内容完全一致"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            self._make_plan(tmp_src, "my-plan", 3)
+
+            export_file = os.path.join(tmp_src, "my-plan.plan.json")
+            saved_path = export_plan(tmp_src, "my-plan", export_file)
+            self.assertTrue(os.path.exists(saved_path))
+
+            imported = import_plan(tmp_dst, export_file)
+            self.assertEqual(imported.name, "my-plan")
+            self.assertEqual(imported.description, "导出测试计划")
+            self.assertEqual(imported.batch_prefix, "export-")
+            self.assertEqual(len(imported.tasks), 3)
+            self.assertEqual(imported.tasks[0].name, "任务1")
+            self.assertEqual(imported.tasks[2].name, "任务3")
+
+            plans = list_plans(tmp_dst)
+            self.assertEqual(len(plans), 1)
+            self.assertEqual(plans[0]["name"], "my-plan")
+
+    def test_export_file_format(self):
+        """导出文件格式符合预期"""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._make_plan(tmp, "format-test", 1)
+            export_file = os.path.join(tmp, "export.json")
+            export_plan(tmp, "format-test", export_file)
+
+            with open(export_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            self.assertEqual(data["format_version"], 1)
+            self.assertEqual(data["type"], "delivery-checker-plan")
+            self.assertIn("plan", data)
+            self.assertEqual(data["plan"]["name"], "format-test")
+            self.assertEqual(data["plan"]["batch_prefix"], "export-")
+            self.assertEqual(len(data["plan"]["tasks"]), 1)
+
+    def test_import_with_rename(self):
+        """导入时重命名"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            self._make_plan(tmp_src, "original-name", 2)
+            export_file = os.path.join(tmp_src, "export.json")
+            export_plan(tmp_src, "original-name", export_file)
+
+            imported = import_plan(
+                tmp_dst, export_file,
+                conflict_strategy="refuse",
+                rename_name="renamed-plan"
+            )
+            self.assertEqual(imported.name, "renamed-plan")
+            self.assertEqual(len(imported.tasks), 2)
+
+            # 原名也能成功导入（不冲突）
+            imported2 = import_plan(tmp_dst, export_file)
+            self.assertEqual(imported2.name, "original-name")
+
+            plans = list_plans(tmp_dst)
+            self.assertEqual(len(plans), 2)
+
+    def test_import_does_not_affect_existing_plans(self):
+        """导入新计划不破坏已有计划"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            # 目标目录先创建一个已有计划
+            existing_tasks = [PlanTaskItem.new(
+                self.EXAMPLE_RULES, self.EXAMPLE_DATA, "已存在任务"
+            )]
+            save_plan(tmp_dst, "existing-plan", "已存在计划", "exist-", existing_tasks)
+
+            # 源目录导出另一个计划
+            self._make_plan(tmp_src, "new-plan", 2)
+            export_file = os.path.join(tmp_src, "export.json")
+            export_plan(tmp_src, "new-plan", export_file)
+
+            # 导入
+            import_plan(tmp_dst, export_file)
+
+            # 验证已有计划未受影响
+            existing = get_plan(tmp_dst, "existing-plan")
+            self.assertEqual(existing.name, "existing-plan")
+            self.assertEqual(existing.description, "已存在计划")
+            self.assertEqual(existing.batch_prefix, "exist-")
+            self.assertEqual(len(existing.tasks), 1)
+            self.assertEqual(existing.tasks[0].name, "已存在任务")
+
+            # 新计划也存在
+            new = get_plan(tmp_dst, "new-plan")
+            self.assertEqual(len(new.tasks), 2)
+
+            plans = list_plans(tmp_dst)
+            self.assertEqual(len(plans), 2)
+
+    def test_export_nonexistent_rejected(self):
+        """导出不存在的计划时报错"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(PlanNotFoundError):
+                export_plan(tmp, "no-such-plan", "out.json")
+
+    def test_import_missing_file_rejected(self):
+        """导入不存在的文件时报错"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(PlanNotFoundError):
+                import_plan(tmp, "no-such-file.json")
+
+    def test_import_bad_json_rejected(self):
+        """导入损坏的 JSON 文件时报错"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_file = os.path.join(tmp, "bad.json")
+            with open(bad_file, "w", encoding="utf-8") as f:
+                f.write("{ this is bad json !!!")
+
+            with self.assertRaises(PlanFormatError):
+                import_plan(tmp, bad_file)
+
+    def test_import_wrong_type_rejected(self):
+        """导入类型标识错误的文件时报错"""
+        with tempfile.TemporaryDirectory() as tmp:
+            wrong_file = os.path.join(tmp, "wrong.json")
+            with open(wrong_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "format_version": 1,
+                    "type": "wrong-type",
+                    "plan": {"name": "test", "tasks": []}
+                }, f)
+
+            with self.assertRaises(PlanFormatError):
+                import_plan(tmp, wrong_file)
+
+
+class TestPlanConflictHandling(unittest.TestCase):
+    """冲突处理策略测试"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+    EXAMPLE_RULES = os.path.join(ROOT, "examples", "rules.yaml")
+    EXAMPLE_DATA = os.path.join(ROOT, "examples", "sample_data")
+
+    def _make_export(self, tmp_src, name):
+        tasks = [PlanTaskItem.new(self.EXAMPLE_RULES, self.EXAMPLE_DATA, "导入任务")]
+        save_plan(tmp_src, name, "源计划描述", "src-", tasks)
+        export_file = os.path.join(tmp_src, "export.json")
+        export_plan(tmp_src, name, export_file)
+        return export_file
+
+    def test_conflict_refuse_strategy(self):
+        """refuse 策略：冲突时报错，不修改原有计划"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            # 目标目录已有同名计划
+            tasks = [PlanTaskItem.new(
+                self.EXAMPLE_RULES, self.EXAMPLE_DATA, "原有任务"
+            )]
+            save_plan(tmp_dst, "conflict-plan", "原有描述", "orig-", tasks)
+            old_plan = get_plan(tmp_dst, "conflict-plan")
+            old_created_at = old_plan.created_at
+
+            export_file = self._make_export(tmp_src, "conflict-plan")
+
+            # refuse 策略应报错
+            with self.assertRaises(PlanConflictError):
+                import_plan(tmp_dst, export_file, conflict_strategy="refuse")
+
+            # 原有计划未被修改
+            plan = get_plan(tmp_dst, "conflict-plan")
+            self.assertEqual(plan.description, "原有描述")
+            self.assertEqual(plan.batch_prefix, "orig-")
+            self.assertEqual(plan.tasks[0].name, "原有任务")
+            self.assertEqual(plan.created_at, old_created_at)
+
+    def test_conflict_overwrite_strategy(self):
+        """overwrite 策略：冲突时覆盖原有计划"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            tasks = [PlanTaskItem.new(
+                self.EXAMPLE_RULES, self.EXAMPLE_DATA, "原有任务"
+            )]
+            save_plan(tmp_dst, "conflict-plan", "原有描述", "orig-", tasks)
+            old_plan = get_plan(tmp_dst, "conflict-plan")
+            old_created_at = old_plan.created_at
+
+            export_file = self._make_export(tmp_src, "conflict-plan")
+
+            imported = import_plan(
+                tmp_dst, export_file, conflict_strategy="overwrite"
+            )
+            self.assertEqual(imported.name, "conflict-plan")
+            self.assertEqual(imported.description, "源计划描述")
+            self.assertEqual(imported.batch_prefix, "src-")
+            self.assertEqual(imported.tasks[0].name, "导入任务")
+
+            # created_at 应保留原值
+            self.assertEqual(imported.created_at, old_created_at)
+
+    def test_conflict_rename_strategy(self):
+        """rename 策略：冲突时自动改名，保留两个计划"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            tasks = [PlanTaskItem.new(
+                self.EXAMPLE_RULES, self.EXAMPLE_DATA, "原有任务"
+            )]
+            save_plan(tmp_dst, "conflict-plan", "原有描述", "orig-", tasks)
+
+            export_file = self._make_export(tmp_src, "conflict-plan")
+
+            imported = import_plan(
+                tmp_dst, export_file, conflict_strategy="rename"
+            )
+            # 自动改名
+            self.assertEqual(imported.name, "conflict-plan_1")
+            self.assertEqual(imported.description, "源计划描述")
+            self.assertEqual(imported.tasks[0].name, "导入任务")
+
+            # 原有计划未变
+            original = get_plan(tmp_dst, "conflict-plan")
+            self.assertEqual(original.description, "原有描述")
+            self.assertEqual(original.tasks[0].name, "原有任务")
+
+            plans = list_plans(tmp_dst)
+            self.assertEqual(len(plans), 2)
+
+    def test_rename_strategy_multiple_conflicts(self):
+        """多次 rename 冲突时递增后缀"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            tasks = [PlanTaskItem.new(self.EXAMPLE_RULES, self.EXAMPLE_DATA)]
+            save_plan(tmp_dst, "multi-plan", "", "", tasks)
+            save_plan(tmp_dst, "multi-plan_1", "", "", tasks)
+            save_plan(tmp_dst, "multi-plan_2", "", "", tasks)
+
+            export_file = self._make_export(tmp_src, "multi-plan")
+
+            imported = import_plan(
+                tmp_dst, export_file, conflict_strategy="rename"
+            )
+            self.assertEqual(imported.name, "multi-plan_3")
+
+            plans = list_plans(tmp_dst)
+            self.assertEqual(len(plans), 4)
+
+    def test_invalid_conflict_strategy_rejected(self):
+        """无效的冲突策略被拒绝"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(PlanFormatError):
+                import_plan(tmp, "any.json", conflict_strategy="invalid")
+
+
+class TestPlanFailureSafety(unittest.TestCase):
+    """失败场景安全测试：不污染旧数据"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+    EXAMPLE_RULES = os.path.join(ROOT, "examples", "rules.yaml")
+    EXAMPLE_DATA = os.path.join(ROOT, "examples", "sample_data")
+
+    def _dir_state_hash(self, base_dir):
+        """计算 .delivery_check 目录的哈希用于检测修改"""
+        state_dir = os.path.join(base_dir, ".delivery_check")
+        hasher = hashlib.sha256()
+        if os.path.exists(state_dir):
+            for root, dirs, files in os.walk(state_dir):
+                for f in sorted(files):
+                    fp = os.path.join(root, f)
+                    hasher.update(fp.encode("utf-8"))
+                    try:
+                        with open(fp, "rb") as fh:
+                            hasher.update(fh.read())
+                    except Exception:
+                        pass
+        return hasher.hexdigest()
+
+    def test_bad_json_import_no_side_effects(self):
+        """导入坏 JSON 时，不修改任何现有计划"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = [PlanTaskItem.new(self.EXAMPLE_RULES, self.EXAMPLE_DATA)]
+            save_plan(tmp, "baseline", "基线计划", "", tasks)
+            baseline_hash = self._dir_state_hash(tmp)
+
+            bad_file = os.path.join(tmp, "bad.json")
+            with open(bad_file, "w", encoding="utf-8") as f:
+                f.write("{ this is not valid json !!!")
+
+            with self.assertRaises(PlanFormatError):
+                import_plan(tmp, bad_file)
+
+            self.assertEqual(self._dir_state_hash(tmp), baseline_hash)
+            plans = list_plans(tmp)
+            self.assertEqual(len(plans), 1)
+            self.assertEqual(plans[0]["name"], "baseline")
+
+    def test_missing_fields_import_no_side_effects(self):
+        """导入缺少必填字段的文件时，不修改现有状态"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = [PlanTaskItem.new(self.EXAMPLE_RULES, self.EXAMPLE_DATA)]
+            save_plan(tmp, "baseline", "", "", tasks)
+            baseline_hash = self._dir_state_hash(tmp)
+
+            bad_file = os.path.join(tmp, "bad_fields.json")
+            with open(bad_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "format_version": 1,
+                    "type": "delivery-checker-plan",
+                    "plan": {
+                        "description": "缺少 name 和 tasks 字段"
+                    }
+                }, f)
+
+            with self.assertRaises(PlanFormatError):
+                import_plan(tmp, bad_file)
+
+            self.assertEqual(self._dir_state_hash(tmp), baseline_hash)
+
+    def test_create_failure_rollback(self):
+        """创建失败时回滚部分写入的文件"""
+        # 这种测试需要模拟权限错误，在单元测试中较难实现
+        # 我们通过验证正常创建失败的场景不留下孤儿文件
+        with tempfile.TemporaryDirectory() as tmp:
+            # 尝试创建一个空任务的计划（会失败）
+            try:
+                save_plan(tmp, "should-fail", "", "", [])
+            except PlanFormatError:
+                pass
+
+            # 验证没有留下孤儿文件
+            plans_dir = os.path.join(tmp, ".delivery_check", "plans")
+            if os.path.exists(plans_dir):
+                files = os.listdir(plans_dir)
+                plan_files = [f for f in files if f.endswith(".plan.json")]
+                self.assertEqual(len(plan_files), 0)
+
+
+class TestPlanCliEndToEnd(unittest.TestCase):
+    """CLI 端到端测试：使用真实 subprocess 调用"""
+
+    ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+    EXAMPLE_RULES = os.path.join(ROOT, "examples", "rules.yaml")
+    EXAMPLE_DATA = os.path.join(ROOT, "examples", "sample_data")
+
+    def _run_in(self, work_dir, *args):
+        import subprocess
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.path.join(self.ROOT, "src")
+        env["PYTHONIOENCODING"] = "utf-8"
+        result = subprocess.run(
+            [sys.executable, "-m", "delivery_checker", *args],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=work_dir,
+        )
+        return result
+
+    def _make_rules_file(self, tmp, batch_name, extra_path=""):
+        rules_path = os.path.join(tmp, extra_path, "rules.yaml") if extra_path else os.path.join(tmp, "rules.yaml")
+        if extra_path:
+            os.makedirs(os.path.join(tmp, extra_path), exist_ok=True)
+        with open(rules_path, "w", encoding="utf-8") as f:
+            f.write(f"""
+batch_name: "{batch_name}"
+root_alias: "test"
+required_files:
+  - "README.md"
+""")
+        return os.path.relpath(rules_path, tmp)
+
+    def _make_data_dir(self, tmp, extra_path="", has_readme=True):
+        data_path = os.path.join(tmp, extra_path, "data") if extra_path else os.path.join(tmp, "data")
+        os.makedirs(data_path, exist_ok=True)
+        if has_readme:
+            with open(os.path.join(data_path, "README.md"), "w") as f:
+                f.write("test")
+        return os.path.relpath(data_path, tmp)
+
+    def test_cli_create_plan(self):
+        """CLI 创建计划"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_rel = self._make_rules_file(tmp, "batch-a")
+            data_rel = self._make_data_dir(tmp)
+
+            result = self._run_in(
+                tmp, "plan", "create",
+                "--name", "cli-test",
+                "--description", "CLI测试计划",
+                "--batch-prefix", "cli-",
+                "--rules", rules_rel,
+                "--data-dir", data_rel,
+                "--task-name", "主任务",
+                "--task-desc", "主任务说明",
+            )
+            self.assertEqual(result.returncode, 0,
+                             f"stdout={result.stdout}\nstderr={result.stderr}")
+            self.assertIn("cli-test", result.stdout)
+            self.assertIn("CLI测试计划", result.stdout)
+            self.assertIn("cli-", result.stdout)
+
+            # 验证计划已创建
+            plans = list_plans(tmp)
+            self.assertEqual(len(plans), 1)
+            self.assertEqual(plans[0]["name"], "cli-test")
+
+            plan = get_plan(tmp, "cli-test")
+            self.assertEqual(plan.description, "CLI测试计划")
+            self.assertEqual(plan.batch_prefix, "cli-")
+            self.assertEqual(len(plan.tasks), 1)
+            self.assertEqual(plan.tasks[0].name, "主任务")
+            self.assertEqual(plan.tasks[0].description, "主任务说明")
+
+    def test_cli_create_multiple_tasks(self):
+        """CLI 创建包含多个任务的计划"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules1 = self._make_rules_file(tmp, "batch-a", "proj_a")
+            data1 = self._make_data_dir(tmp, "proj_a")
+            rules2 = self._make_rules_file(tmp, "batch-b", "proj_b")
+            data2 = self._make_data_dir(tmp, "proj_b")
+
+            result = self._run_in(
+                tmp, "plan", "create",
+                "--name", "multi-task",
+                "--rules", rules1,
+                "--rules", rules2,
+                "--data-dir", data1,
+                "--data-dir", data2,
+                "--task-name", "项目A",
+                "--task-name", "项目B",
+            )
+            self.assertEqual(result.returncode, 0,
+                             f"stdout={result.stdout}\nstderr={result.stderr}")
+
+            plan = get_plan(tmp, "multi-task")
+            self.assertEqual(len(plan.tasks), 2)
+            self.assertEqual(plan.tasks[0].name, "项目A")
+            self.assertEqual(plan.tasks[1].name, "项目B")
+            self.assertIn("proj_a", plan.tasks[0].rules_path)
+            self.assertIn("proj_b", plan.tasks[1].rules_path)
+
+    def test_cli_list_plans(self):
+        """CLI 列出计划"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 先创建几个计划
+            for i in range(3):
+                rules_rel = self._make_rules_file(tmp, f"batch-{i}", f"proj{i}")
+                data_rel = self._make_data_dir(tmp, f"proj{i}")
+                self._run_in(
+                    tmp, "plan", "create",
+                    "--name", f"plan-{i}",
+                    "--description", f"计划{i}",
+                    "--rules", rules_rel,
+                    "--data-dir", data_rel,
+                )
+
+            result = self._run_in(tmp, "plan", "list")
+            self.assertEqual(result.returncode, 0,
+                             f"stderr={result.stderr}")
+            self.assertIn("plan-0", result.stdout)
+            self.assertIn("plan-1", result.stdout)
+            self.assertIn("plan-2", result.stdout)
+
+    def test_cli_show_plan(self):
+        """CLI 显示计划详情"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_rel = self._make_rules_file(tmp, "show-batch")
+            data_rel = self._make_data_dir(tmp)
+
+            self._run_in(
+                tmp, "plan", "create",
+                "--name", "show-test",
+                "--description", "显示测试",
+                "--batch-prefix", "show-",
+                "--rules", rules_rel,
+                "--data-dir", data_rel,
+            )
+
+            result = self._run_in(tmp, "plan", "show", "show-test")
+            self.assertEqual(result.returncode, 0,
+                             f"stderr={result.stderr}")
+            self.assertIn("show-test", result.stdout)
+            self.assertIn("显示测试", result.stdout)
+            self.assertIn("show-", result.stdout)
+            self.assertIn(rules_rel, result.stdout)
+            self.assertIn(data_rel, result.stdout)
+
+    def test_cli_show_nonexistent_exit_1(self):
+        """显示不存在的计划返回退出码 1"""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_in(tmp, "plan", "show", "no-such-plan")
+            self.assertEqual(result.returncode, 1,
+                             f"stderr={result.stderr}")
+            self.assertIn("不存在", result.stderr)
+
+    def test_cli_create_conflict_exit_3(self):
+        """创建同名计划返回退出码 3"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_rel = self._make_rules_file(tmp, "conflict-batch")
+            data_rel = self._make_data_dir(tmp)
+
+            # 第一次创建成功
+            self._run_in(
+                tmp, "plan", "create",
+                "--name", "conflict-plan",
+                "--rules", rules_rel,
+                "--data-dir", data_rel,
+            )
+
+            # 第二次创建失败，退出码 3
+            result = self._run_in(
+                tmp, "plan", "create",
+                "--name", "conflict-plan",
+                "--rules", rules_rel,
+                "--data-dir", data_rel,
+            )
+            self.assertEqual(result.returncode, 3,
+                             f"stderr={result.stderr}")
+            self.assertIn("已存在", result.stderr)
+
+    def test_cli_create_force_overwrite(self):
+        """使用 -f 强制覆盖同名计划"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules1 = self._make_rules_file(tmp, "batch1", "proj1")
+            data1 = self._make_data_dir(tmp, "proj1")
+            rules2 = self._make_rules_file(tmp, "batch2", "proj2")
+            data2 = self._make_data_dir(tmp, "proj2")
+
+            # 第一次创建
+            self._run_in(
+                tmp, "plan", "create",
+                "--name", "overwrite-me",
+                "--description", "旧描述",
+                "--rules", rules1,
+                "--data-dir", data1,
+            )
+
+            # 强制覆盖
+            result = self._run_in(
+                tmp, "plan", "create",
+                "--name", "overwrite-me",
+                "--description", "新描述",
+                "--batch-prefix", "new-",
+                "--rules", rules2,
+                "--data-dir", data2,
+                "--force",
+            )
+            self.assertEqual(result.returncode, 0,
+                             f"stderr={result.stderr}")
+
+            plan = get_plan(tmp, "overwrite-me")
+            self.assertEqual(plan.description, "新描述")
+            self.assertEqual(plan.batch_prefix, "new-")
+            self.assertIn("proj2", plan.tasks[0].rules_path)
+
+    def test_cli_delete_plan(self):
+        """CLI 删除计划"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_rel = self._make_rules_file(tmp, "del-batch")
+            data_rel = self._make_data_dir(tmp)
+
+            self._run_in(
+                tmp, "plan", "create",
+                "--name", "to-delete",
+                "--rules", rules_rel,
+                "--data-dir", data_rel,
+            )
+            self.assertEqual(len(list_plans(tmp)), 1)
+
+            result = self._run_in(tmp, "plan", "delete", "to-delete")
+            self.assertEqual(result.returncode, 0,
+                             f"stderr={result.stderr}")
+            self.assertEqual(len(list_plans(tmp)), 0)
+
+    def test_cli_delete_nonexistent_exit_1(self):
+        """删除不存在的计划返回退出码 1"""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_in(tmp, "plan", "delete", "no-such-plan")
+            self.assertEqual(result.returncode, 1,
+                             f"stderr={result.stderr}")
+
+    def test_cli_export_import_roundtrip(self):
+        """CLI 导出导入往返"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            rules_rel = self._make_rules_file(tmp_src, "export-batch")
+            data_rel = self._make_data_dir(tmp_src)
+
+            self._run_in(
+                tmp_src, "plan", "create",
+                "--name", "export-plan",
+                "--description", "导出计划",
+                "--batch-prefix", "exp-",
+                "--rules", rules_rel,
+                "--data-dir", data_rel,
+            )
+
+            export_file = os.path.join(tmp_src, "export.plan.json")
+            result = self._run_in(tmp_src, "plan", "export", "export-plan", export_file)
+            self.assertEqual(result.returncode, 0,
+                             f"stderr={result.stderr}")
+            self.assertTrue(os.path.exists(export_file))
+
+            result = self._run_in(tmp_dst, "plan", "import", export_file)
+            self.assertEqual(result.returncode, 0,
+                             f"stderr={result.stderr}")
+            self.assertIn("export-plan", result.stdout)
+
+            plans = list_plans(tmp_dst)
+            self.assertEqual(len(plans), 1)
+            self.assertEqual(plans[0]["name"], "export-plan")
+
+            plan = get_plan(tmp_dst, "export-plan")
+            self.assertEqual(plan.description, "导出计划")
+            self.assertEqual(plan.batch_prefix, "exp-")
+
+    def test_cli_import_conflict_refuse_exit_3(self):
+        """导入冲突（refuse 策略）返回退出码 3"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            rules1 = self._make_rules_file(tmp_src, "batch1")
+            data1 = self._make_data_dir(tmp_src)
+            self._run_in(
+                tmp_src, "plan", "create",
+                "--name", "conflict-plan",
+                "--description", "源计划",
+                "--rules", rules1,
+                "--data-dir", data1,
+            )
+            export_file = os.path.join(tmp_src, "export.json")
+            self._run_in(tmp_src, "plan", "export", "conflict-plan", export_file)
+
+            # 目标目录已有同名计划
+            rules2 = self._make_rules_file(tmp_dst, "batch2")
+            data2 = self._make_data_dir(tmp_dst)
+            self._run_in(
+                tmp_dst, "plan", "create",
+                "--name", "conflict-plan",
+                "--description", "目标计划",
+                "--rules", rules2,
+                "--data-dir", data2,
+            )
+
+            # refuse 策略（默认）
+            result = self._run_in(tmp_dst, "plan", "import", export_file)
+            self.assertEqual(result.returncode, 3,
+                             f"stderr={result.stderr}")
+
+            # 原有计划未变
+            plan = get_plan(tmp_dst, "conflict-plan")
+            self.assertEqual(plan.description, "目标计划")
+
+    def test_cli_import_conflict_overwrite(self):
+        """导入冲突时使用 overwrite 策略"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            rules1 = self._make_rules_file(tmp_src, "batch1")
+            data1 = self._make_data_dir(tmp_src)
+            self._run_in(
+                tmp_src, "plan", "create",
+                "--name", "conflict-plan",
+                "--description", "源计划",
+                "--rules", rules1,
+                "--data-dir", data1,
+            )
+            export_file = os.path.join(tmp_src, "export.json")
+            self._run_in(tmp_src, "plan", "export", "conflict-plan", export_file)
+
+            rules2 = self._make_rules_file(tmp_dst, "batch2")
+            data2 = self._make_data_dir(tmp_dst)
+            self._run_in(
+                tmp_dst, "plan", "create",
+                "--name", "conflict-plan",
+                "--description", "目标计划",
+                "--rules", rules2,
+                "--data-dir", data2,
+            )
+
+            result = self._run_in(
+                tmp_dst, "plan", "import", export_file,
+                "--conflict", "overwrite"
+            )
+            self.assertEqual(result.returncode, 0,
+                             f"stderr={result.stderr}")
+
+            plan = get_plan(tmp_dst, "conflict-plan")
+            self.assertEqual(plan.description, "源计划")
+
+    def test_cli_import_conflict_rename(self):
+        """导入冲突时使用 rename 策略"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            rules1 = self._make_rules_file(tmp_src, "batch1")
+            data1 = self._make_data_dir(tmp_src)
+            self._run_in(
+                tmp_src, "plan", "create",
+                "--name", "conflict-plan",
+                "--description", "源计划",
+                "--rules", rules1,
+                "--data-dir", data1,
+            )
+            export_file = os.path.join(tmp_src, "export.json")
+            self._run_in(tmp_src, "plan", "export", "conflict-plan", export_file)
+
+            rules2 = self._make_rules_file(tmp_dst, "batch2")
+            data2 = self._make_data_dir(tmp_dst)
+            self._run_in(
+                tmp_dst, "plan", "create",
+                "--name", "conflict-plan",
+                "--description", "目标计划",
+                "--rules", rules2,
+                "--data-dir", data2,
+            )
+
+            result = self._run_in(
+                tmp_dst, "plan", "import", export_file,
+                "--conflict", "rename"
+            )
+            self.assertEqual(result.returncode, 0,
+                             f"stderr={result.stderr}")
+            self.assertIn("conflict-plan_1", result.stdout)
+
+            plans = list_plans(tmp_dst)
+            self.assertEqual(len(plans), 2)
+
+    def test_cli_import_bad_json_exit_2(self):
+        """导入损坏的 JSON 返回退出码 2"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_file = os.path.join(tmp, "bad.json")
+            with open(bad_file, "w", encoding="utf-8") as f:
+                f.write("{ not valid json !!!")
+
+            result = self._run_in(tmp, "plan", "import", bad_file)
+            self.assertEqual(result.returncode, 2,
+                             f"stderr={result.stderr}")
+
+    def test_cli_run_plan_success(self):
+        """CLI 运行计划，全部任务成功"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 创建两个任务
+            rules1 = self._make_rules_file(tmp, "run-batch-1", "proj1")
+            data1 = self._make_data_dir(tmp, "proj1")
+            rules2 = self._make_rules_file(tmp, "run-batch-2", "proj2")
+            data2 = self._make_data_dir(tmp, "proj2")
+
+            self._run_in(
+                tmp, "plan", "create",
+                "--name", "run-test",
+                "--description", "运行测试",
+                "--batch-prefix", "run-",
+                "--rules", rules1,
+                "--rules", rules2,
+                "--data-dir", data1,
+                "--data-dir", data2,
+            )
+
+            # 运行计划
+            result = self._run_in(tmp, "plan", "run", "run-test")
+            self.assertEqual(result.returncode, 0,
+                             f"stdout={result.stdout}\nstderr={result.stderr}")
+            self.assertIn("成功", result.stdout)
+            self.assertIn("2", result.stdout)  # 总计 2
+            self.assertIn("run-run-batch-1", result.stdout)
+            self.assertIn("run-run-batch-2", result.stdout)
+
+            # 验证报告已生成
+            for batch_name in ["run-run-batch-1", "run-run-batch-2"]:
+                report_path = os.path.join(tmp, f"{batch_name}_report.csv")
+                self.assertTrue(os.path.exists(report_path),
+                               f"报告不存在: {report_path}")
+
+            # 验证批次已创建
+            batches = list_batches(tmp)
+            batch_names = [b["batch_name"] for b in batches]
+            self.assertIn("run-run-batch-1", batch_names)
+            self.assertIn("run-run-batch-2", batch_names)
+
+    def test_cli_run_plan_with_output_dir(self):
+        """CLI 运行计划，指定输出目录"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_rel = self._make_rules_file(tmp, "out-batch")
+            data_rel = self._make_data_dir(tmp)
+
+            self._run_in(
+                tmp, "plan", "create",
+                "--name", "out-test",
+                "--rules", rules_rel,
+                "--data-dir", data_rel,
+            )
+
+            output_dir = os.path.join(tmp, "reports")
+            result = self._run_in(
+                tmp, "plan", "run", "out-test",
+                "--output-dir", output_dir,
+            )
+            self.assertEqual(result.returncode, 0,
+                             f"stderr={result.stderr}")
+
+            # 报告应该在输出目录
+            report_path = os.path.join(output_dir, "out-batch_report.csv")
+            self.assertTrue(os.path.exists(report_path))
+
+    def test_cli_run_plan_invalid_paths_exit_2(self):
+        """运行时路径无效返回退出码 2"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 创建一个指向不存在文件的计划
+            rules_path = "nonexistent.yaml"
+            data_path = "nonexistent_dir"
+            os.makedirs(os.path.dirname(rules_path) if os.path.dirname(rules_path) else ".", exist_ok=True)
+
+            # 直接用 API 创建（CLI create 不会验证路径）
+            tasks = [PlanTaskItem.new(rules_path, data_path)]
+            save_plan(tmp, "bad-paths", "", "", tasks)
+
+            result = self._run_in(tmp, "plan", "run", "bad-paths")
+            self.assertEqual(result.returncode, 2,
+                             f"stderr={result.stderr}")
+            self.assertIn("不存在", result.stderr)
+
+    def test_cli_run_plan_partial_failure_exit_5(self):
+        """部分任务失败返回退出码 5，且不中断其他任务"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 任务1：正常
+            rules1 = self._make_rules_file(tmp, "good-batch", "good")
+            data1 = self._make_data_dir(tmp, "good")
+
+            # 任务2：规则文件格式错误
+            rules2_path = os.path.join(tmp, "bad", "rules.yaml")
+            os.makedirs(os.path.join(tmp, "bad"), exist_ok=True)
+            with open(rules2_path, "w", encoding="utf-8") as f:
+                f.write("::: invalid yaml :::")
+            data2 = self._make_data_dir(tmp, "bad")
+            rules2_rel = os.path.relpath(rules2_path, tmp)
+
+            self._run_in(
+                tmp, "plan", "create",
+                "--name", "partial-fail",
+                "--rules", rules1,
+                "--rules", rules2_rel,
+                "--data-dir", data1,
+                "--data-dir", data2,
+            )
+
+            result = self._run_in(tmp, "plan", "run", "partial-fail")
+            self.assertEqual(result.returncode, 5,
+                             f"stdout={result.stdout}\nstderr={result.stderr}")
+
+            # 摘要中应显示 1 成功 1 失败
+            self.assertIn("成功: 1", result.stdout)
+            self.assertIn("失败: 1", result.stdout)
+
+            # 好的任务应该仍然生成了报告
+            report_path = os.path.join(tmp, "good-batch_report.csv")
+            self.assertTrue(os.path.exists(report_path))
+
+    def test_cli_run_plan_skip_existing_batches(self):
+        """运行计划时跳过已存在的批次"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_rel = self._make_rules_file(tmp, "skip-batch")
+            data_rel = self._make_data_dir(tmp)
+
+            self._run_in(
+                tmp, "plan", "create",
+                "--name", "skip-test",
+                "--rules", rules_rel,
+                "--data-dir", data_rel,
+            )
+
+            # 第一次运行：成功
+            result1 = self._run_in(tmp, "plan", "run", "skip-test")
+            self.assertEqual(result1.returncode, 0)
+            self.assertIn("成功: 1", result1.stdout)
+
+            # 第二次运行：跳过（默认 merge 模式，退出码 3 被视为跳过）
+            result2 = self._run_in(tmp, "plan", "run", "skip-test")
+            self.assertEqual(result2.returncode, 0,
+                             f"stdout={result2.stdout}\nstderr={result2.stderr}")
+            self.assertIn("跳过: 1", result2.stdout)
+
+    def test_cli_run_plan_force_rescan(self):
+        """使用 --force 强制重新扫描已存在的批次"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_rel = self._make_rules_file(tmp, "force-batch")
+            data_rel = self._make_data_dir(tmp)
+
+            self._run_in(
+                tmp, "plan", "create",
+                "--name", "force-test",
+                "--rules", rules_rel,
+                "--data-dir", data_rel,
+            )
+
+            # 第一次运行
+            self._run_in(tmp, "plan", "run", "force-test")
+
+            # 第二次运行，使用 --force
+            result = self._run_in(tmp, "plan", "run", "force-test", "--force")
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("成功: 1", result.stdout)
+            self.assertIn("跳过: 0", result.stdout)
+
+    def test_cli_run_plan_no_merge(self):
+        """使用 --no-merge 时遇到已存在批次视为失败"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_rel = self._make_rules_file(tmp, "nomerge-batch")
+            data_rel = self._make_data_dir(tmp)
+
+            self._run_in(
+                tmp, "plan", "create",
+                "--name", "nomerge-test",
+                "--rules", rules_rel,
+                "--data-dir", data_rel,
+            )
+
+            # 第一次运行
+            self._run_in(tmp, "plan", "run", "nomerge-test")
+
+            # 第二次运行，使用 --no-merge
+            result = self._run_in(tmp, "plan", "run", "nomerge-test", "--no-merge")
+            self.assertEqual(result.returncode, 5,
+                             f"stdout={result.stdout}\nstderr={result.stderr}")
+            self.assertIn("失败: 1", result.stdout)
+
+    def test_cli_create_rules_data_count_mismatch_exit_2(self):
+        """--rules 与 --data-dir 数量不一致返回退出码 2"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules1 = self._make_rules_file(tmp, "b1", "p1")
+            data1 = self._make_data_dir(tmp, "p1")
+
+            result = self._run_in(
+                tmp, "plan", "create",
+                "--name", "mismatch",
+                "--rules", rules1,
+                "--rules", rules1,
+                "--data-dir", data1,
+            )
+            self.assertEqual(result.returncode, 2,
+                             f"stderr={result.stderr}")
+            self.assertIn("数量必须一致", result.stderr)
+
+    def test_cli_persistence_across_restarts(self):
+        """跨"重启"持久性：CLI 创建后，在新的 Python 进程中仍可见"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_rel = self._make_rules_file(tmp, "persist-batch")
+            data_rel = self._make_data_dir(tmp)
+
+            # 进程1：创建计划
+            result1 = self._run_in(
+                tmp, "plan", "create",
+                "--name", "persist-plan",
+                "--description", "持久性测试",
+                "--batch-prefix", "persist-",
+                "--rules", rules_rel,
+                "--data-dir", data_rel,
+            )
+            self.assertEqual(result1.returncode, 0)
+
+            # 进程2：list 能看到
+            result2 = self._run_in(tmp, "plan", "list")
+            self.assertEqual(result2.returncode, 0)
+            self.assertIn("persist-plan", result2.stdout)
+
+            # 进程3：show 能看到详情
+            result3 = self._run_in(tmp, "plan", "show", "persist-plan")
+            self.assertEqual(result3.returncode, 0)
+            self.assertIn("持久性测试", result3.stdout)
+            self.assertIn("persist-", result3.stdout)
+
+            # 进程4：run 能运行
+            result4 = self._run_in(tmp, "plan", "run", "persist-plan")
+            self.assertEqual(result4.returncode, 0)
+            self.assertIn("成功: 1", result4.stdout)
 
 
 if __name__ == "__main__":

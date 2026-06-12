@@ -94,6 +94,21 @@ from .backup import (
     preview_restore,
     show_backup,
 )
+from .plan import (
+    Plan,
+    PlanTaskItem,
+    PlanConflictError,
+    PlanFormatError,
+    PlanNotFoundError,
+    PlanPermissionError,
+    delete_plan,
+    export_plan,
+    get_plan,
+    import_plan,
+    list_plans,
+    run_plan,
+    save_plan,
+)
 
 
 C_RESET = "\033[0m"
@@ -334,6 +349,14 @@ def cmd_scan(args: argparse.Namespace) -> int:
     except ConfigError as e:
         print(_color(f"❌ 配置格式错误: {e}", C_RED, color), file=sys.stderr)
         return 2
+
+    batch_name_override = getattr(args, "batch_name", "") or ""
+    if batch_name_override:
+        rules.batch_name = batch_name_override.strip()
+
+    batch_prefix = getattr(args, "batch_prefix", "") or ""
+    if batch_prefix and not batch_name_override:
+        rules.batch_name = f"{batch_prefix}{rules.batch_name}"
 
     base_dir = _get_base_dir()
 
@@ -1882,6 +1905,310 @@ def cmd_backup_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_plan_create(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+
+    rules_paths = getattr(args, "rules", []) or []
+    data_dirs = getattr(args, "data_dirs", []) or []
+    task_names = getattr(args, "task_name", []) or []
+    task_descs = getattr(args, "task_desc", []) or []
+
+    if not rules_paths:
+        print(_color("❌ 至少需要指定一个 --rules", C_RED, color), file=sys.stderr)
+        return 2
+    if not data_dirs:
+        print(_color("❌ 至少需要指定一个 --data-dir", C_RED, color), file=sys.stderr)
+        return 2
+    if len(rules_paths) != len(data_dirs):
+        print(_color(
+            f"❌ --rules ({len(rules_paths)}) 与 --data-dir ({len(data_dirs)}) 数量必须一致",
+            C_RED, color), file=sys.stderr)
+        return 2
+
+    tasks: List[PlanTaskItem] = []
+    for i in range(len(rules_paths)):
+        try:
+            task = PlanTaskItem.new(
+                rules_path=rules_paths[i],
+                data_dir=data_dirs[i],
+                name=task_names[i] if i < len(task_names) else "",
+                description=task_descs[i] if i < len(task_descs) else "",
+            )
+            tasks.append(task)
+        except PlanFormatError as e:
+            print(_color(f"❌ 第 {i+1} 个任务项错误: {e}", C_RED, color), file=sys.stderr)
+            return 2
+
+    try:
+        plan = save_plan(
+            base_dir=base_dir,
+            name=args.name,
+            description=getattr(args, "description", "") or "",
+            batch_prefix=getattr(args, "batch_prefix", "") or "",
+            tasks=tasks,
+            force=getattr(args, "force", False),
+        )
+    except PlanFormatError as e:
+        print(_color(f"❌ 计划格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except PlanConflictError as e:
+        print(_color(f"⚠️  {e}", C_YELLOW, color), file=sys.stderr)
+        print(_color("   加 -f 覆盖，或换个名称保存。", C_GRAY, color), file=sys.stderr)
+        return 3
+    except PlanPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    print(_color(f"✅ 计划已创建", C_GREEN, color))
+    print(f"   名称: {_color(plan.name, C_BOLD, color)}")
+    if plan.description:
+        print(f"   说明: {plan.description}")
+    if plan.batch_prefix:
+        print(f"   批次名前缀: {_color(plan.batch_prefix, C_CYAN, color)}")
+    print(f"   任务数: {len(plan.tasks)}")
+    for i, task in enumerate(plan.tasks, 1):
+        task_name = task.name or f"任务{i}"
+        print(f"   {i}. {_color(task_name, C_BOLD, color)}")
+        if task.description:
+            print(f"      说明: {task.description}")
+        print(f"      规则: {task.rules_path}")
+        print(f"      资料: {task.data_dir}")
+    print(f"   创建时间: {plan.created_at}")
+    return 0
+
+
+def cmd_plan_list(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        plans = list_plans(base_dir)
+    except PlanFormatError as e:
+        print(_color(f"❌ 索引格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except PlanPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    if not plans:
+        print(_color("（暂无计划）", C_GRAY, color))
+        print(_color("使用 plan create 子命令创建第一个计划", C_GRAY, color))
+        return 0
+
+    print(_color(f"{'#':>3}  {'名称':<20}  {'任务数':>6}  {'前缀':<15}  说明", C_BOLD, color))
+    print(_color("-" * 90, C_GRAY, color))
+    for idx, p in enumerate(plans, 1):
+        name = _color(p["name"][:20], C_CYAN, color)
+        task_count = str(p.get("task_count", 0))
+        prefix = (p.get("batch_prefix", "") or "")[:15]
+        desc = p.get("description", "")
+        print(f"{idx:>3}  {name:<20}  {task_count:>6}  {prefix:<15}  {desc}")
+        if p.get("updated_at"):
+            print(f"     {_color('更新: ' + p['updated_at'], C_GRAY, color)}")
+    return 0
+
+
+def cmd_plan_show(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        plan = get_plan(base_dir, args.name)
+    except PlanNotFoundError as e:
+        print(_color(f"❌ 计划不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except PlanFormatError as e:
+        print(_color(f"❌ 计划文件损坏: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except PlanPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+
+    print(_color(f"📋 计划「{plan.name}」详情", C_BOLD, color))
+    if plan.description:
+        print(f"  说明: {plan.description}")
+    if plan.batch_prefix:
+        print(f"  批次名前缀: {_color(plan.batch_prefix, C_CYAN, color)}")
+    print(f"  工作区: {plan.workspace_dir or '(当前目录)'}")
+    print(f"  创建时间: {plan.created_at}")
+    print(f"  更新时间: {plan.updated_at}")
+    print()
+    print(_color(f"任务列表 ({len(plan.tasks)} 项):", C_BOLD, color))
+    resolved = plan.resolve_paths()
+    for i, (task, (abs_rules, abs_data)) in enumerate(zip(plan.tasks, resolved), 1):
+        task_name = task.name or f"任务{i}"
+        print(f"  {_color(f'{i}. {task_name}', C_BOLD, color)}")
+        if task.description:
+            print(f"     说明: {task.description}")
+        print(f"     规则: {task.rules_path}")
+        print(f"           → {abs_rules}")
+        print(f"     资料: {task.data_dir}")
+        print(f"           → {abs_data}")
+
+    path_errors = plan.validate_paths()
+    if path_errors:
+        print()
+        print(_color("⚠️  路径问题:", C_YELLOW, color))
+        for idx, msg in path_errors:
+            print(f"   任务 {idx+1}: {msg}")
+    return 0
+
+
+def cmd_plan_run(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+
+    output_dir = getattr(args, "output_dir", None)
+    no_merge = getattr(args, "no_merge", False)
+    force_rescan = getattr(args, "force", False)
+    export_format = getattr(args, "format", "csv") or "csv"
+
+    try:
+        summary = run_plan(
+            base_dir=base_dir,
+            name=args.name,
+            output_dir=output_dir,
+            no_merge=no_merge,
+            force_rescan=force_rescan,
+            export_format=export_format,
+        )
+    except PlanNotFoundError as e:
+        print(_color(f"❌ 计划不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except PlanFormatError as e:
+        print(_color(f"❌ 计划格式或路径错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except PlanPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    except Exception as e:
+        print(_color(f"❌ 执行异常: {e}", C_RED, color), file=sys.stderr)
+        return 5
+
+    print()
+    print(_color(f"📊 计划「{summary['plan_name']}」执行结果", C_BOLD, color))
+    print(f"   总计: {summary['total']}  "
+          f"{_color('成功', C_GREEN, color)}: {summary['success']}  "
+          f"{_color('失败', C_RED, color)}: {summary['failed']}  "
+          f"{_color('跳过', C_YELLOW, color)}: {summary['skipped']}")
+    print()
+
+    report_paths: List[str] = []
+    for result in summary["results"]:
+        idx = result["task_index"] + 1
+        task_name = result["task_name"]
+        batch_name = result["batch_name"]
+        status = result["status"]
+        report_path = result["report_path"]
+        error_msg = result["error_message"]
+        exit_code = result["exit_code"]
+
+        if status == "success":
+            status_color = C_GREEN
+            status_label = "✅ 成功"
+        elif status == "skipped":
+            status_color = C_YELLOW
+            status_label = "⚠️  跳过"
+        else:
+            status_color = C_RED
+            status_label = "❌ 失败"
+
+        print(f"  {_color(f'{idx}. {task_name}', C_BOLD, color)}")
+        print(f"     批次: {batch_name}")
+        print(f"     状态: {_color(status_label, status_color, color)} (退出码: {exit_code})")
+        if report_path:
+            print(f"     报告: {report_path}")
+            report_paths.append(report_path)
+        if error_msg:
+            print(f"     {_color('错误: ' + error_msg, status_color, color)}")
+
+    print()
+    if report_paths:
+        print(_color("📄 所有报告路径:", C_BOLD, color))
+        for rp in report_paths:
+            print(f"   {rp}")
+
+    if summary["failed"] > 0:
+        return 5
+    return 0
+
+
+def cmd_plan_export(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    output = args.output or f"{args.name}.plan.json"
+    try:
+        saved = export_plan(
+            base_dir=base_dir,
+            name=args.name,
+            output_path=output,
+        )
+    except PlanNotFoundError as e:
+        print(_color(f"❌ 计划不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except PlanFormatError as e:
+        print(_color(f"❌ 计划格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except PlanPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    print(_color(f"📄 计划已导出: {saved}", C_GREEN, color))
+    return 0
+
+
+def cmd_plan_import(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    strategy_map = {"overwrite": "overwrite", "rename": "rename", "refuse": "refuse"}
+    strategy = strategy_map.get(args.conflict, "refuse")
+    try:
+        plan = import_plan(
+            base_dir,
+            args.input,
+            conflict_strategy=strategy,
+            rename_name=args.rename_name,
+        )
+    except PlanNotFoundError as e:
+        print(_color(f"❌ 导入文件不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except PlanFormatError as e:
+        print(_color(f"❌ 导入文件格式错误: {e}", C_RED, color), file=sys.stderr)
+        return 2
+    except PlanConflictError as e:
+        print(_color(f"❌ 计划名称冲突: {e}", C_RED, color), file=sys.stderr)
+        print(_color("使用 --conflict overwrite 覆盖，或 --conflict rename 自动改名。", C_YELLOW, color), file=sys.stderr)
+        return 3
+    except PlanPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    except Exception as e:
+        print(_color(f"❌ 导入失败: {e}", C_RED, color), file=sys.stderr)
+        return 5
+
+    strategy_label = {"overwrite": "覆盖", "rename": "自动改名", "refuse": "拒绝"}.get(strategy, strategy)
+    print(_color(f"✅ 计划已导入", C_GREEN, color))
+    print(f"   名称: {_color(plan.name, C_BOLD, color)}")
+    print(f"   冲突策略: {strategy_label}")
+    print(f"   说明: {plan.description or '(无)'}")
+    print(f"   任务数: {len(plan.tasks)}")
+    print(f"   导入时间: {plan.updated_at}")
+    return 0
+
+
+def cmd_plan_delete(args: argparse.Namespace) -> int:
+    color = _use_color()
+    base_dir = _get_base_dir()
+    try:
+        delete_plan(base_dir, args.name)
+    except PlanNotFoundError as e:
+        print(_color(f"❌ 计划不存在: {e}", C_RED, color), file=sys.stderr)
+        return 1
+    except PlanPermissionError as e:
+        print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
+        return 4
+    print(_color(f"✅ 已删除计划: {args.name}", C_GREEN, color))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="delivery-checker",
@@ -1897,6 +2224,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="强制重新扫描（保留原有复核状态）")
     p_scan.add_argument("--no-merge", action="store_true",
                         help="不合并已有批次，遇到同名批次直接报错")
+    p_scan.add_argument("--batch-prefix", default="",
+                        help="批次名称前缀，添加到规则文件中定义的 batch_name 之前")
+    p_scan.add_argument("--batch-name", default="",
+                        help="批次名称，覆盖规则文件中定义的 batch_name")
     p_scan.set_defaults(func=cmd_scan)
 
     p_review = sub.add_parser("review", help="交互式复核（推荐）")
@@ -2151,6 +2482,60 @@ def build_parser() -> argparse.ArgumentParser:
     p_bk_delete = p_backup_sub.add_parser("delete", help="删除备份")
     p_bk_delete.add_argument("name", help="备份名称")
     p_bk_delete.set_defaults(func=cmd_backup_delete)
+
+    p_plan = sub.add_parser("plan", help="批量检查计划（create/list/show/run/export/import/delete）")
+    p_plan_sub = p_plan.add_subparsers(dest="plan_command", required=True)
+
+    p_plan_create = p_plan_sub.add_parser("create", help="创建批量检查计划")
+    p_plan_create.add_argument("--name", "-n", required=True, help="计划名称")
+    p_plan_create.add_argument("--description", "-d", default="", help="计划说明")
+    p_plan_create.add_argument("--batch-prefix", "-p", default="", help="批次名前缀（如 daily-）")
+    p_plan_create.add_argument("--rules", action="append", required=True,
+                               help="规则文件路径，可多次指定（与 --data-dir 一一对应）")
+    p_plan_create.add_argument("--data-dir", dest="data_dirs", action="append", required=True,
+                               help="资料目录路径，可多次指定")
+    p_plan_create.add_argument("--task-name", action="append", default=[],
+                               help="任务名称（按顺序对应）")
+    p_plan_create.add_argument("--task-desc", action="append", default=[],
+                               help="任务说明（按顺序对应）")
+    p_plan_create.add_argument("--force", "-f", action="store_true",
+                               help="强制覆盖已存在的同名计划")
+    p_plan_create.set_defaults(func=cmd_plan_create)
+
+    p_plan_list = p_plan_sub.add_parser("list", help="列出所有计划")
+    p_plan_list.set_defaults(func=cmd_plan_list)
+
+    p_plan_show = p_plan_sub.add_parser("show", help="查看计划详情")
+    p_plan_show.add_argument("name", help="计划名称")
+    p_plan_show.set_defaults(func=cmd_plan_show)
+
+    p_plan_run = p_plan_sub.add_parser("run", help="运行计划，逐项执行扫描")
+    p_plan_run.add_argument("name", help="计划名称")
+    p_plan_run.add_argument("--output-dir", "-o", help="报告输出目录（默认工作区目录）")
+    p_plan_run.add_argument("--format", "-f", choices=["csv", "html"], default="csv",
+                            help="报告格式（默认 csv）")
+    p_plan_run.add_argument("--no-merge", action="store_true",
+                            help="不合并已有批次，遇到同名批次报错并跳过")
+    p_plan_run.add_argument("--force", action="store_true",
+                            help="强制重新扫描已存在的批次")
+    p_plan_run.set_defaults(func=cmd_plan_run)
+
+    p_plan_export = p_plan_sub.add_parser("export", help="导出计划为 JSON 文件")
+    p_plan_export.add_argument("name", help="计划名称")
+    p_plan_export.add_argument("output", nargs="?", help="导出文件路径（默认: <name>.plan.json）")
+    p_plan_export.set_defaults(func=cmd_plan_export)
+
+    p_plan_import = p_plan_sub.add_parser("import", help="从 JSON 文件导入计划")
+    p_plan_import.add_argument("input", help="计划导出文件路径 (.plan.json)")
+    p_plan_import.add_argument("--conflict", "-c", choices=["overwrite", "rename", "refuse"],
+                               default="refuse",
+                               help="同名冲突处理策略（默认 refuse 拒绝）")
+    p_plan_import.add_argument("--rename-name", "-N", help="重命名导入的计划名称")
+    p_plan_import.set_defaults(func=cmd_plan_import)
+
+    p_plan_delete = p_plan_sub.add_parser("delete", help="删除计划")
+    p_plan_delete.add_argument("name", help="计划名称")
+    p_plan_delete.set_defaults(func=cmd_plan_delete)
 
     return parser
 

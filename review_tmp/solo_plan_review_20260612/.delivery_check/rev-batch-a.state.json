@@ -1,0 +1,29 @@
+{
+  "batch_name": "rev-batch-a",
+  "data_dir": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\solo_plan_review_20260612\\proj_a\\data",
+  "rules": {
+    "batch_name": "rev-batch-a",
+    "root_alias": "A",
+    "required_files": [
+      {
+        "pattern": "README.md",
+        "description": "",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      }
+    ],
+    "naming_rules": [],
+    "ignore_patterns": [],
+    "expiry_date": null,
+    "metadata": {},
+    "source_path": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\solo_plan_review_20260612\\proj_a\\rules.yaml",
+    "source_hash": "fb0a3ebb0b267875"
+  },
+  "rules_hash": "fb0a3ebb0b267875",
+  "issues": {},
+  "undo_stack": [],
+  "created_at": "2026-06-12T22:50:00",
+  "updated_at": "2026-06-12T22:50:00"
+}

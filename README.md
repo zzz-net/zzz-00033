@@ -16,6 +16,7 @@
 | **报告导出** | 美观 HTML（卡片+表格）与 Excel 兼容 CSV（UTF-8-BOM） |
 | **边界容错** | 配置格式错误、目录不存在、重复扫描、规则不一致、空撤销 均有明确提示，**不清除已有批次状态** |
 | **备份与恢复** | 将工作区可迁移状态打成备份包，支持 JSON/ZIP 导出、跨机器导入、差异预览恢复 |
+| **批量检查计划** | 将多组规则文件和资料目录编成可复用计划，一次跑完多批扫描，支持导出导入 |
 
 ---
 
@@ -38,6 +39,7 @@ zzz-00033/
 │   ├── snapshot.py             快照归档（创建/导入/导出）
 │   ├── compare.py              批次对比（差异识别/配置/导出）
 │   ├── backup.py               工作区备份与恢复（create/list/show/export/import/restore/delete）
+│   ├── plan.py                 批量检查计划（create/list/show/run/export/import/delete）
 │   └── models.py               数据模型
 ├── examples/
 │   ├── rules.yaml              样例规则（YAML）
@@ -1415,6 +1417,319 @@ dc.bat backup show "daily"
 
 ---
 
+## 📋 批量检查计划（Plan）
+
+将多组规则文件和资料目录编成**可复用的检查计划**，一次跑完多批扫描，自动汇总成功、失败、跳过数量和报告路径。单项失败不会中断整批执行，所有计划持久化保存，重启后仍可查看和运行。
+
+### 计划包含内容
+
+每个计划包含：
+
+| 字段 | 说明 |
+|------|------|
+| **名称** | 计划唯一标识，用于引用 |
+| **说明** | 计划用途描述 |
+| **批次前缀** | 添加到每个任务批次名前，避免不同计划间批次名冲突 |
+| **任务列表** | 多条任务项，每项含规则文件路径、资料目录、任务名称、任务说明 |
+
+### 快速上手
+
+#### 1. 创建计划
+
+```bash
+# 创建包含两个任务的计划
+dc.bat plan create "月度交付检查" ^
+  --description "每月例行交付资料检查" ^
+  --batch-prefix "monthly-" ^
+  --task --rules project-a\rules.yaml --data-dir project-a\data --name "A项目" ^
+  --task --rules project-b\rules.yaml --data-dir project-b\data --name "B项目"
+```
+
+**输出示例：**
+```
+✅ 计划已创建
+   名称: 月度交付检查
+   说明: 每月例行交付资料检查
+   批次前缀: monthly-
+   任务数: 2
+     1. A项目
+        规则: project-a\rules.yaml
+        目录: project-a\data
+     2. B项目
+        规则: project-b\rules.yaml
+        目录: project-b\data
+```
+
+#### 2. 列出所有计划
+
+```bash
+dc.bat plan list
+```
+
+**输出示例：**
+```
+  #  名称              任务数  批次前缀    说明
+------------------------------------------------------------------------------
+  1  月度交付检查      2       monthly-   每月例行交付资料检查
+     创建: 2026-06-12T10:00:00
+```
+
+#### 3. 查看计划详情
+
+```bash
+dc.bat plan show "月度交付检查"
+```
+
+**输出示例：**
+```
+计划: 月度交付检查
+  说明: 每月例行交付资料检查
+  批次前缀: monthly-
+  创建时间: 2026-06-12T10:00:00
+  更新时间: 2026-06-12T10:00:00
+  工作目录: D:\work\delivery
+
+任务列表 (2 个):
+  1. A项目
+     规则: project-a\rules.yaml
+     目录: project-a\data
+  2. B项目
+     规则: project-b\rules.yaml
+     目录: project-b\data
+```
+
+#### 4. 运行计划
+
+```bash
+# 运行计划，自动跳过已存在的批次
+dc.bat plan run "月度交付检查"
+
+# 强制重新扫描已有批次
+dc.bat plan run "月度交付检查" --force
+
+# 不合并，遇到已存在批次视为失败
+dc.bat plan run "月度交付检查" --no-merge
+
+# 指定报告输出目录和格式
+dc.bat plan run "月度交付检查" --output-dir ./reports --format html
+```
+
+**输出示例：**
+```
+📊 计划「月度交付检查」执行结果
+   总计: 2  成功: 1  失败: 0  跳过: 1
+
+  1. A项目
+     批次: monthly-batch-a
+     状态: ✅ 成功 (退出码: 0)
+     报告: D:\work\delivery\monthly-batch-a_report.csv
+
+  2. B项目
+     批次: monthly-batch-b
+     状态: ⚠️  跳过 (退出码: 0)
+     原因: 批次已存在
+
+📄 所有报告路径:
+   D:\work\delivery\monthly-batch-a_report.csv
+```
+
+> **重要**：部分任务失败时，其他任务仍会继续执行，最终退出码为 5（如有失败）。
+
+#### 5. 导出计划
+
+```bash
+# 导出到指定文件
+dc.bat plan export "月度交付检查" monthly-check.plan.json
+
+# 使用默认文件名（<名称>.plan.json）
+dc.bat plan export "月度交付检查"
+```
+
+#### 6. 导入计划
+
+```bash
+# 默认策略：同名拒绝
+dc.bat plan import monthly-check.plan.json
+
+# 同名时覆盖
+dc.bat plan import monthly-check.plan.json --conflict overwrite
+
+# 同名时自动改名（如 月度交付检查_1）
+dc.bat plan import monthly-check.plan.json --conflict rename
+```
+
+**冲突处理示例：**
+
+**场景 A：同名拒绝（默认）**
+```
+❌ 计划名称冲突: 计划「月度交付检查」已存在。
+使用 --conflict overwrite 覆盖，或 --conflict rename 自动改名。
+```
+退出码：3
+
+**场景 B：自动改名**
+```
+✅ 计划已导入
+   名称: 月度交付检查_1
+   冲突策略: 自动改名
+   任务数: 2
+```
+
+**场景 C：覆盖**
+```
+✅ 计划已导入
+   名称: 月度交付检查
+   冲突策略: 覆盖
+   任务数: 2
+```
+
+#### 7. 删除计划
+
+```bash
+dc.bat plan delete "月度交付检查"
+```
+
+### 计划文件结构
+
+```
+.delivery_check/
+  plans/
+    index.json              # 计划索引（元数据列表，原子写入）
+    月度交付检查.plan.json   # 计划数据本体
+```
+
+**索引文件：** 记录所有计划的元数据（名称、说明、批次前缀、任务数、创建/更新时间），重启后仍可列出。
+
+**原子写入保证：** 所有写入操作先写 `.tmp` 再 `shutil.move` 替换，中途崩溃不会损坏文件。
+
+### 路径解析规则
+
+任务项中的相对路径按**计划文件所在工作区**解析：
+- 计划创建时的当前目录作为 `workspace_dir` 保存
+- 运行时所有相对路径都相对于 `workspace_dir` 解析
+- 导出/导入时保留相对路径，导入到新环境后按新的工作区解析
+
+### 导出文件格式
+
+```json
+{
+  "format_version": 1,
+  "type": "delivery-checker-plan",
+  "plan": {
+    "name": "月度交付检查",
+    "description": "每月例行交付资料检查",
+    "batch_prefix": "monthly-",
+    "tasks": [
+      {
+        "name": "A项目",
+        "description": "",
+        "rules_path": "project-a/rules.yaml",
+        "data_dir": "project-a/data"
+      },
+      {
+        "name": "B项目",
+        "description": "",
+        "rules_path": "project-b/rules.yaml",
+        "data_dir": "project-b/data"
+      }
+    ],
+    "created_at": "2026-06-12T10:00:00",
+    "updated_at": "2026-06-12T10:00:00"
+  }
+}
+```
+
+### 错误码与边界处理
+
+| 退出码 | 场景 | 示例 |
+|-------|------|------|
+| **0** | 成功 | 创建/列出/查看/导出/导入/删除成功；计划运行全部成功或有跳过 |
+| **1** | 计划不存在 / 导入文件不存在 | `plan show no-such-plan` → 计划不存在 |
+| **2** | 格式错误（坏 JSON / 缺字段 / 路径无效） | 导入坏 JSON 文件；运行时规则文件或资料目录不存在 |
+| **3** | 名称冲突（创建时 / 导入 refuse 策略） | 创建同名计划；导入同名计划且策略为 refuse |
+| **4** | 权限不足（读/写/删除失败 / 输出目录无写权限） | 目标目录无写权限 |
+| **5** | 计划运行有任务失败 | 运行计划时部分任务执行失败 |
+
+#### 典型场景示例
+
+```bash
+# 场景 1：计划不存在
+dc.bat plan show no-such-plan
+# ❌ 计划不存在: no-such-plan
+# 退出码: 1
+
+# 场景 2：导入坏 JSON 文件
+echo "not json" > bad.plan.json
+dc.bat plan import bad.plan.json
+# ❌ 计划格式错误: JSON 解析失败 bad.plan.json: ...
+# 退出码: 2
+
+# 场景 3：创建同名计划
+dc.bat plan create "月度交付检查" --task --rules r.yaml --data-dir ./data
+# ❌ 计划已存在: 计划「月度交付检查」已存在
+# 退出码: 3
+
+# 场景 4：运行时规则文件不存在
+dc.bat plan run "缺失文件的计划"
+# ❌ 计划格式或路径错误: ...
+# 退出码: 2
+
+# 场景 5：输出目录无写权限
+dc.bat plan run "月度交付检查" --output-dir /protected/dir
+# ❌ 权限错误: 输出目录无写权限: /protected/dir
+# 退出码: 4
+```
+
+> **重要保证**：
+> - 计划运行时，单项任务失败**不会中断**其他任务
+> - 失败任务会记录错误信息，最终汇总展示
+> - 所有计划操作都是原子写入，中途崩溃不会损坏数据
+> - 计划运行不会修改其他计划或批次状态（除了正常创建/更新扫描批次）
+
+### 常用工作流示例
+
+#### 工作流 1：多项目批量检查
+
+```bash
+# 1. 创建包含所有项目的检查计划
+dc.bat plan create "Q2全部项目检查" ^
+  --description "2026 Q2 所有交付项目检查" ^
+  --batch-prefix "q2-" ^
+  --task --rules proj1/rules.yaml --data-dir proj1/deliverables --name "项目1" ^
+  --task --rules proj2/rules.yaml --data-dir proj2/deliverables --name "项目2" ^
+  --task --rules proj3/rules.yaml --data-dir proj3/deliverables --name "项目3"
+
+# 2. 一键运行所有检查
+dc.bat plan run "Q2全部项目检查" --output-dir ./q2_reports
+
+# 3. 查看汇总结果（成功几个、失败几个、跳过几个）
+# 所有报告都在 q2_reports/ 目录下
+```
+
+#### 工作流 2：跨团队共享检查计划
+
+```bash
+# 团队 A：导出标准检查计划
+dc.bat plan export "标准交付检查" standard-check.plan.json
+
+# 团队 B：导入并运行
+dc.bat plan import standard-check.plan.json
+dc.bat plan run "标准交付检查"
+```
+
+#### 工作流 3：跨重启持久化
+
+```bash
+# 第一天：创建计划
+dc.bat plan create "周度检查" --task --rules r.yaml --data-dir ./data
+
+# 第二天：直接运行（计划已持久化）
+dc.bat plan run "周度检查"
+# 计划仍在列表中，可以直接运行
+```
+
+---
+
 ## ⚠️ 边界场景提示
 
 所有边界场景都**不会清除既有批次状态**。
@@ -1626,6 +1941,13 @@ metadata:
 | `dc.bat backup import <文件> [--conflict overwrite\|rename\|refuse] [--rename-name <新名称>]` | 导入备份，支持三种冲突处理策略 |
 | `dc.bat backup restore <名称> [--conflict overwrite\|skip\|abort] [--dry-run]` | 从备份恢复数据（先预览差异再确认） |
 | `dc.bat backup delete <名称>` | 删除备份 |
+| `dc.bat plan create <名称> [--description <desc>] [--batch-prefix <prefix>] --task --rules <r1> --data-dir <d1> [--name <n1>] [--description <desc1>] --task ...` | 创建批量检查计划 |
+| `dc.bat plan list` | 列出所有计划 |
+| `dc.bat plan show <名称>` | 查看计划详情 |
+| `dc.bat plan run <名称> [--force] [--no-merge] [--output-dir <dir>] [--format csv\|html]` | 运行计划，逐项执行 |
+| `dc.bat plan export <名称> [输出文件]` | 导出计划为 JSON 文件 |
+| `dc.bat plan import <文件> [--conflict overwrite\|rename\|refuse]` | 导入计划，支持三种冲突处理策略 |
+| `dc.bat plan delete <名称>` | 删除计划 |
 | `dc.bat --no-color ...` | 禁用彩色输出（日志/管道场景） |
 
 **退出码说明**：
@@ -1637,7 +1959,7 @@ metadata:
 | 2 | 规则配置格式/语义错误 / 规则包或预设或对比配置或快照或备份格式错误（坏 JSON / 缺字段） / 快照导入名称冲突（refuse 策略） / 备份名称为空 |
 | 3 | 重复扫描 / 规则/目录不一致 / 规则包或预设或对比配置或快照或备份同名冲突 / 导出文件拒绝覆盖 / 恢复冲突中止 |
 | 4 | 状态文件读写失败 / 权限不足 / 导出目录无写权限 / 快照或备份权限不足 |
-| 5 | 快照创建/导入其他失败 / 备份文件损坏 |
+| 5 | 快照创建/导入其他失败 / 备份文件损坏 / 计划运行有任务失败 |
 | 6 | 备份版本不兼容 |
 | 130 | Ctrl+C 中断 |
 

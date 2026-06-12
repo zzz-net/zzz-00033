@@ -1,0 +1,4 @@
+batch_name: "batch-a"
+root_alias: "A"
+required_files:
+  - "README.md"

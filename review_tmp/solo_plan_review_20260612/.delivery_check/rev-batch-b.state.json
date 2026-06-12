@@ -1,0 +1,52 @@
+{
+  "batch_name": "rev-batch-b",
+  "data_dir": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\solo_plan_review_20260612\\proj_b\\data",
+  "rules": {
+    "batch_name": "rev-batch-b",
+    "root_alias": "B",
+    "required_files": [
+      {
+        "pattern": "README.md",
+        "description": "",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      },
+      {
+        "pattern": "MISSING.txt",
+        "description": "",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      }
+    ],
+    "naming_rules": [],
+    "ignore_patterns": [],
+    "expiry_date": null,
+    "metadata": {},
+    "source_path": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\solo_plan_review_20260612\\proj_b\\rules.yaml",
+    "source_hash": "65f3b8cb5448f1ca"
+  },
+  "rules_hash": "65f3b8cb5448f1ca",
+  "issues": {
+    "39786dd469ec": {
+      "id": "39786dd469ec",
+      "type": "missing",
+      "path": "MISSING.txt",
+      "message": "缺少必需文件或目录匹配项: MISSING.txt",
+      "detail": "",
+      "status": "pending",
+      "reviewer": null,
+      "note": "",
+      "reviewed_at": null,
+      "group_key": null,
+      "type_label": "必需文件缺失",
+      "status_label": "待复核"
+    }
+  },
+  "undo_stack": [],
+  "created_at": "2026-06-12T22:50:00",
+  "updated_at": "2026-06-12T22:50:00"
+}

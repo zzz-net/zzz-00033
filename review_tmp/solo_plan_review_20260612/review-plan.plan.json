@@ -1,0 +1,26 @@
+{
+  "format_version": 1,
+  "type": "delivery-checker-plan",
+  "plan": {
+    "name": "review-plan",
+    "description": "reviewer plan",
+    "batch_prefix": "rev-",
+    "tasks": [
+      {
+        "name": "A task",
+        "description": "",
+        "rules_path": "proj_a\\rules.yaml",
+        "data_dir": "proj_a\\data"
+      },
+      {
+        "name": "B task",
+        "description": "",
+        "rules_path": "proj_b\\rules.yaml",
+        "data_dir": "proj_b\\data"
+      }
+    ],
+    "created_at": "2026-06-12T22:50:00",
+    "updated_at": "2026-06-12T22:50:00",
+    "workspace_dir": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\solo_plan_review_20260612"
+  }
+}

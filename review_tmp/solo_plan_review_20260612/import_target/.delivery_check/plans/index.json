@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "plans": [
+    {
+      "name": "review-plan",
+      "description": "reviewer plan",
+      "batch_prefix": "rev-",
+      "task_count": 2,
+      "created_at": "2026-06-12T22:50:00",
+      "updated_at": "2026-06-12T22:51:40",
+      "file": "review-plan.plan.json",
+      "workspace_dir": "D:\\workSpace\\AI__SPACE\\zzz-00033\\review_tmp\\solo_plan_review_20260612\\import_target"
+    }
+  ]
+}

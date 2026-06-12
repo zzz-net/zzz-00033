@@ -1,0 +1,5 @@
+batch_name: "batch-b"
+root_alias: "B"
+required_files:
+  - "README.md"
+  - "MISSING.txt"
