@@ -1,0 +1,5 @@
+batch_name: "pkg-batch"
+root_alias: "pkg-data"
+required_files:
+  - "README.md"
+  - "CHANGELOG.md"

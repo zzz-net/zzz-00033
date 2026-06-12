@@ -262,8 +262,8 @@ def create_or_resume_batch(
 
         if not merge:
             raise DuplicateScanError(
-                f"批次「{batch_name}」已存在，不能重复扫描。\n"
-                f"使用 --resume 打开已有批次继续工作，或使用 --force 重新扫描。"
+                f"批次「{batch_name}」已存在，不能重复扫描（--no-merge 模式）。\n"
+                f"去掉 --no-merge 即可自动续办，或加 --force 强制重新扫描。"
             )
 
         return state, "已打开已有批次继续工作（续办）"

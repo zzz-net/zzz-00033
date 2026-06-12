@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "packages": [
+    {
+      "name": "mypkg",
+      "version": "1.0.0",
+      "description": "test",
+      "created_at": "2026-06-12T14:06:29",
+      "updated_at": "2026-06-12T14:06:29",
+      "file": "mypkg_1.0.0.json",
+      "rule_count": 1
+    }
+  ]
+}

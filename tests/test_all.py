@@ -1413,6 +1413,301 @@ class TestRulePackageCliExitCodes(unittest.TestCase):
             self.assertIn("mypkg", list_result.stdout)
             self.assertIn("mypkg-renamed", list_result.stdout)
 
+    def test_import_with_short_options_N_V_exit_0(self):
+        """验证 -N/-V 短选项可用（与错误提示中的 -N/-V 一致）"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            rules_path = os.path.join(tmp_src, "rules.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("batch_name: 'test'\nroot_alias: 'test'\nrequired_files:\n  - 'README.md'\n")
+            self._run_in(tmp_src, "rule-save", rules_path,
+                        "-n", "mypkg", "-v", "1.0.0").check_returncode()
+
+            export_file = os.path.join(tmp_src, "export.rulepkg.json")
+            self._run_in(tmp_src, "rule-export", "mypkg", "1.0.0",
+                        export_file).check_returncode()
+
+            # 用短选项 -N/-V 改名导入（用户按错误提示操作的路径）
+            result = self._run_in(
+                tmp_dst, "rule-import", export_file,
+                "-N", "mypkg-short",
+                "-V", "2.0.0"
+            )
+            self.assertEqual(result.returncode, 0, f"stderr={result.stderr}")
+
+            list_result = self._run_in(tmp_dst, "rule-list")
+            self.assertIn("mypkg-short", list_result.stdout)
+            self.assertIn("2.0.0", list_result.stdout)
+
+    def test_error_tips_match_available_args(self):
+        """验证错误提示中提到的参数确实在 CLI help 中存在，不会让用户执行不存在的参数"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 1. 验证 rule-save 冲突提示中的 -f、-n、-v 存在
+            help_result = self._run_in(tmp, "rule-save", "--help")
+            self.assertEqual(help_result.returncode, 0)
+            self.assertIn("-f", help_result.stdout)
+            self.assertIn("--force", help_result.stdout)
+            self.assertIn("-n", help_result.stdout)
+            self.assertIn("--name", help_result.stdout)
+            self.assertIn("-v", help_result.stdout)
+            self.assertIn("--version", help_result.stdout)
+
+            # 2. 验证 rule-import 冲突提示中的 -f、-N、-V 存在
+            help_result = self._run_in(tmp, "rule-import", "--help")
+            self.assertEqual(help_result.returncode, 0)
+            self.assertIn("-f", help_result.stdout)
+            self.assertIn("--force", help_result.stdout)
+            self.assertIn("-N", help_result.stdout)
+            self.assertIn("--rename-name", help_result.stdout)
+            self.assertIn("-V", help_result.stdout)
+            self.assertIn("--rename-version", help_result.stdout)
+
+            # 3. 验证 scan --help 中没有 --resume（避免提示不存在的参数）
+            help_result = self._run_in(tmp, "scan", "--help")
+            self.assertEqual(help_result.returncode, 0)
+            self.assertNotIn("--resume", help_result.stdout)
+
+    def test_import_conflict_then_follow_tip_force(self):
+        """完整用户路径：导入冲突 → 按提示用 -f 覆盖 → 成功"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            # 源：创建并导出
+            rules_path = os.path.join(tmp_src, "rules.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("batch_name: 'test'\nroot_alias: 'test'\nrequired_files:\n  - 'README.md'\n  - 'NEW.md'\n")
+            self._run_in(tmp_src, "rule-save", rules_path,
+                        "-n", "conflict", "-v", "1.0.0", "-d", "新版本").check_returncode()
+
+            export_file = os.path.join(tmp_src, "export.rulepkg.json")
+            self._run_in(tmp_src, "rule-export", "conflict", "1.0.0",
+                        export_file).check_returncode()
+
+            # 目标：先导入一个旧版本
+            rules_old = os.path.join(tmp_dst, "old_rules.yaml")
+            with open(rules_old, "w", encoding="utf-8") as f:
+                f.write("batch_name: 'old'\nroot_alias: 'test'\nrequired_files:\n  - 'README.md'\n")
+            self._run_in(tmp_dst, "rule-save", rules_old,
+                        "-n", "conflict", "-v", "1.0.0", "-d", "旧版本").check_returncode()
+
+            # 步骤1：无 force 导入 → 冲突
+            r1 = self._run_in(tmp_dst, "rule-import", export_file)
+            self.assertEqual(r1.returncode, 3)
+            self.assertIn("-f", r1.stderr)  # 提示中包含 -f
+            self.assertIn("-N", r1.stderr)  # 提示中包含 -N
+            self.assertIn("-V", r1.stderr)  # 提示中包含 -V
+
+            # 步骤2：按提示用 -f 覆盖 → 成功
+            r2 = self._run_in(tmp_dst, "rule-import", export_file, "-f")
+            self.assertEqual(r2.returncode, 0, f"stderr={r2.stderr}")
+
+            # 验证覆盖成功：规则数应为 2（README.md + NEW.md）
+            pkg = get_rule_package(tmp_dst, "conflict", "1.0.0")
+            self.assertEqual(len(pkg.rules["required_files"]), 2)
+            self.assertEqual(pkg.description, "新版本")
+
+    def test_import_conflict_then_follow_tip_rename(self):
+        """完整用户路径：导入冲突 → 按提示用 -N/-V 改名 → 成功"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            rules_path = os.path.join(tmp_src, "rules.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("batch_name: 'test'\nroot_alias: 'test'\nrequired_files:\n  - 'README.md'\n")
+            self._run_in(tmp_src, "rule-save", rules_path,
+                        "-n", "mypkg", "-v", "1.0.0", "-d", "原版本").check_returncode()
+
+            export_file = os.path.join(tmp_src, "export.rulepkg.json")
+            self._run_in(tmp_src, "rule-export", "mypkg", "1.0.0",
+                        export_file).check_returncode()
+
+            # 目标：先导入一次
+            self._run_in(tmp_dst, "rule-import", export_file).check_returncode()
+            self.assertEqual(len(list_rule_packages(tmp_dst)), 1)
+
+            # 步骤1：再次导入 → 冲突
+            r1 = self._run_in(tmp_dst, "rule-import", export_file)
+            self.assertEqual(r1.returncode, 3)
+
+            # 步骤2：按提示用 -N/-V 改名导入 → 成功
+            r2 = self._run_in(
+                tmp_dst, "rule-import", export_file,
+                "-N", "mypkg-imported",
+                "-V", "2.0.0"
+            )
+            self.assertEqual(r2.returncode, 0, f"stderr={r2.stderr}")
+
+            # 验证两个包都存在
+            packages = list_rule_packages(tmp_dst)
+            self.assertEqual(len(packages), 2)
+            names = [(p["name"], p["version"]) for p in packages]
+            self.assertIn(("mypkg", "1.0.0"), names)
+            self.assertIn(("mypkg-imported", "2.0.0"), names)
+
+    def test_scan_duplicate_then_follow_tip_no_merge(self):
+        """scan 重复扫描冲突 → 按提示去掉 --no-merge 续办 → 成功"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_path = os.path.join(tmp, "rules.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("batch_name: 'dup-test'\nroot_alias: 't'\nrequired_files:\n  - 'README.md'\n")
+
+            data_dir = os.path.join(tmp, "data")
+            os.makedirs(data_dir)
+            with open(os.path.join(data_dir, "README.md"), "w") as f:
+                f.write("test")
+
+            # 第一次扫描（默认 merge=true）
+            r1 = self._run_in(tmp, "scan", rules_path, data_dir)
+            self.assertEqual(r1.returncode, 0, f"stderr={r1.stderr}")
+
+            # 步骤1：加 --no-merge 重复扫描 → 冲突
+            r2 = self._run_in(tmp, "scan", rules_path, data_dir, "--no-merge")
+            self.assertEqual(r2.returncode, 3)
+            self.assertIn("去掉 --no-merge", r2.stderr)
+            self.assertIn("--force", r2.stderr)
+
+            # 步骤2：按提示去掉 --no-merge → 自动续办成功
+            r3 = self._run_in(tmp, "scan", rules_path, data_dir)
+            self.assertEqual(r3.returncode, 0, f"stderr={r3.stderr}")
+            self.assertIn("续办", r3.stdout)
+
+            # 步骤3：按提示加 --force → 强制重新扫描成功
+            r4 = self._run_in(tmp, "scan", rules_path, data_dir, "--no-merge", "--force")
+            self.assertEqual(r4.returncode, 0, f"stderr={r4.stderr}")
+            self.assertIn("重新扫描", r4.stdout)
+
+    def test_rule_save_conflict_then_follow_tips(self):
+        """rule-save 冲突 → 按提示操作 → 成功"""
+        with tempfile.TemporaryDirectory() as tmp:
+            rules_path = os.path.join(tmp, "rules.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("batch_name: 'test'\nroot_alias: 'test'\nrequired_files:\n  - 'README.md'\n")
+
+            # 第一次保存
+            self._run_in(tmp, "rule-save", rules_path,
+                        "-n", "save-test", "-v", "1.0.0").check_returncode()
+
+            # 步骤1：再次保存同名同版本 → 冲突
+            r1 = self._run_in(tmp, "rule-save", rules_path,
+                             "-n", "save-test", "-v", "1.0.0")
+            self.assertEqual(r1.returncode, 3)
+            self.assertIn("-f", r1.stderr)
+            self.assertIn("-n", r1.stderr)
+            self.assertIn("-v", r1.stderr)
+
+            # 步骤2：按提示用 -f 覆盖 → 成功
+            r2 = self._run_in(tmp, "rule-save", rules_path,
+                             "-n", "save-test", "-v", "1.0.0", "-f")
+            self.assertEqual(r2.returncode, 0, f"stderr={r2.stderr}")
+
+            # 步骤3：按提示用 -n/-v 换名 → 成功
+            r3 = self._run_in(tmp, "rule-save", rules_path,
+                             "-n", "save-test-new", "-v", "2.0.0")
+            self.assertEqual(r3.returncode, 0, f"stderr={r3.stderr}")
+
+            packages = list_rule_packages(tmp)
+            self.assertEqual(len(packages), 2)
+
+    def test_bad_json_import_no_side_effects_cli(self):
+        """CLI 级别验证：坏 JSON 导入失败，不污染旧状态"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 先保存一个规则包作为基线
+            rules_path = os.path.join(tmp, "rules.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("batch_name: 'baseline'\nroot_alias: 'test'\nrequired_files:\n  - 'README.md'\n")
+            self._run_in(tmp, "rule-save", rules_path,
+                        "-n", "baseline", "-v", "1.0.0", "-d", "基线").check_returncode()
+
+            list_before = self._run_in(tmp, "rule-list")
+            self.assertEqual(list_before.returncode, 0)
+
+            # 创建坏 JSON
+            bad_file = os.path.join(tmp, "bad.json")
+            with open(bad_file, "w", encoding="utf-8") as f:
+                f.write("{ this is NOT valid json !!!")
+
+            # 导入坏 JSON → 失败
+            r = self._run_in(tmp, "rule-import", bad_file)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("JSON", r.stderr)
+
+            # 验证规则包未受影响
+            list_after = self._run_in(tmp, "rule-list")
+            self.assertEqual(list_after.returncode, 0)
+            self.assertEqual(list_after.stdout, list_before.stdout)
+
+            # 验证原规则包仍可获取
+            pkg = get_rule_package(tmp, "baseline", "1.0.0")
+            self.assertEqual(pkg.description, "基线")
+
+    def test_missing_fields_import_no_side_effects_cli(self):
+        """CLI 级别验证：缺字段导入失败，不污染旧状态"""
+        with tempfile.TemporaryDirectory() as tmp:
+            # 先保存基线
+            rules_path = os.path.join(tmp, "rules.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("batch_name: 'baseline'\nroot_alias: 'test'\nrequired_files:\n  - 'README.md'\n")
+            self._run_in(tmp, "rule-save", rules_path,
+                        "-n", "baseline", "-v", "1.0.0").check_returncode()
+
+            list_before = self._run_in(tmp, "rule-list")
+
+            # 创建缺字段的导出文件
+            import json
+            bad_file = os.path.join(tmp, "missing_fields.json")
+            with open(bad_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "format_version": 1,
+                    "type": "delivery-checker-rule-package",
+                    "package": {
+                        "name": "bad-pkg",
+                        # 缺少 version、description、rules
+                    }
+                }, f)
+
+            # 导入 → 失败，退出码 2
+            r = self._run_in(tmp, "rule-import", bad_file)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("缺少必填字段", r.stderr)
+
+            # 验证未受影响
+            list_after = self._run_in(tmp, "rule-list")
+            self.assertEqual(list_after.stdout, list_before.stdout)
+
+    def test_no_resume_in_any_error_messages(self):
+        """确保所有错误提示中都不再出现不存在的 --resume 参数"""
+        with tempfile.TemporaryDirectory() as tmp_src, \
+             tempfile.TemporaryDirectory() as tmp_dst:
+
+            # 1. scan --no-merge 冲突提示
+            rules_path = os.path.join(tmp_src, "rules.yaml")
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write("batch_name: 'test'\nroot_alias: 'test'\nrequired_files:\n  - 'README.md'\n")
+            data_dir = os.path.join(tmp_src, "data")
+            os.makedirs(data_dir)
+            self._run_in(tmp_src, "scan", rules_path, data_dir).check_returncode()
+            r = self._run_in(tmp_src, "scan", rules_path, data_dir, "--no-merge")
+            self.assertNotIn("--resume", r.stderr)
+            self.assertNotIn("--rename", r.stderr)  # scan 不该提 rename
+
+            # 2. rule-save 冲突提示
+            self._run_in(tmp_src, "rule-save", rules_path,
+                        "-n", "test", "-v", "1.0.0").check_returncode()
+            r = self._run_in(tmp_src, "rule-save", rules_path,
+                            "-n", "test", "-v", "1.0.0")
+            self.assertNotIn("--rename", r.stderr)  # 不该提不存在的 --rename
+            self.assertNotIn("--resume", r.stderr)
+
+            # 3. rule-import 冲突提示
+            export_file = os.path.join(tmp_src, "export.json")
+            self._run_in(tmp_src, "rule-export", "test", "1.0.0",
+                        export_file).check_returncode()
+            self._run_in(tmp_dst, "rule-import", export_file).check_returncode()
+            r = self._run_in(tmp_dst, "rule-import", export_file)
+            self.assertNotIn("--rename", r.stderr)  # 不该提不存在的 --rename
+            self.assertNotIn("--resume", r.stderr)
+
     def test_existing_commands_still_work(self):
         """确保原有 scan/review/mark/export/undo 命令不受影响"""
         with tempfile.TemporaryDirectory() as tmp:

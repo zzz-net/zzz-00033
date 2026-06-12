@@ -1,0 +1,29 @@
+{
+  "batch_name": "test-batch",
+  "data_dir": "C:\\Users\\admin\\AppData\\Local\\Temp\\1\\ra02\\data",
+  "rules": {
+    "batch_name": "test-batch",
+    "root_alias": "test",
+    "required_files": [
+      {
+        "pattern": "README.md",
+        "description": "项目说明",
+        "optional": false,
+        "naming_rule": null,
+        "expiry_date": null,
+        "max_matches": null
+      }
+    ],
+    "naming_rules": [],
+    "ignore_patterns": [],
+    "expiry_date": null,
+    "metadata": {},
+    "source_path": "C:\\Users\\admin\\AppData\\Local\\Temp\\1\\ra02\\rules.yaml",
+    "source_hash": "039ebeea872e72f9"
+  },
+  "rules_hash": "039ebeea872e72f9",
+  "issues": {},
+  "undo_stack": [],
+  "created_at": "2026-06-12T14:06:08",
+  "updated_at": "2026-06-12T14:07:08"
+}

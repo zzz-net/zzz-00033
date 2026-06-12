@@ -280,8 +280,7 @@ def save_rule_package(
 
     if existing_idx is not None and not force:
         raise RulePkgConflictError(
-            f"规则包「{name}」版本「{version}」已存在。\n"
-            f"使用 --force 覆盖，或使用 --rename 保存为其他名称/版本。"
+            f"规则包「{name}」版本「{version}」已存在。"
         )
 
     pkg = RulePackage.from_rules(name, version, description, rules)

@@ -301,10 +301,21 @@ dc.bat rule-import standard-delivery.rulepkg.json --force
 **场景 A：同名同版本已存在**
 ```
 ⚠️  规则包「standard-delivery」版本「1.0.0」已存在。
-使用 --force 覆盖，或使用 --rename 保存为其他名称/版本。
+   加 -f 强制覆盖，或用 -N/-V 改名导入。
    （原有规则包未被修改）
 ```
 退出码：3
+
+**改名导入示例：**
+```bash
+dc.bat rule-import standard-delivery.rulepkg.json ^
+  -N "standard-delivery" -V "1.1.0"
+```
+
+**强制覆盖示例：**
+```bash
+dc.bat rule-import standard-delivery.rulepkg.json -f
+```
 
 **场景 B：导入坏 JSON 文件**
 ```
@@ -358,8 +369,8 @@ dc.bat scan examples\rules.yaml examples\sample_data --no-merge
 
 输出：
 ```
-⚠️  批次「交付样例-2026-Q2」已存在，不能重复扫描。
-使用 --resume 打开已有批次继续工作，或使用 --force 重新扫描。
+⚠️  批次「交付样例-2026-Q2」已存在，不能重复扫描（--no-merge 模式）。
+去掉 --no-merge 即可自动续办，或加 --force 强制重新扫描。
 ```
 
 > 如果你想**重新扫描文件、但保留复核状态**，加 `--force`。
@@ -531,7 +542,7 @@ metadata:
 | `dc.bat rule-save <rules> --name <name> --version <ver> [--description <desc>] [--force]` | 保存规则为命名规则包 |
 | `dc.bat rule-list` | 列出所有已保存的规则包 |
 | `dc.bat rule-export <name> <version> [output]` | 导出规则包为可分享文件 |
-| `dc.bat rule-import <file> [--force] [--rename-name <n>] [--rename-version <v>]` | 导入规则包 |
+| `dc.bat rule-import <file> [-f] [-N <name>] [-V <version>]` | 导入规则包，支持覆盖或改名 |
 | `dc.bat --no-color ...` | 禁用彩色输出（日志/管道场景） |
 
 **退出码说明**：

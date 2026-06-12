@@ -1,0 +1,4 @@
+batch_name: "review-batch"
+root_alias: "review-data"
+required_files:
+  - "README.md"

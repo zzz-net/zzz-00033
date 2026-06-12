@@ -547,6 +547,7 @@ def cmd_rule_save(args: argparse.Namespace) -> int:
         return 2
     except RulePkgConflictError as e:
         print(_color(f"⚠️  {e}", C_YELLOW, color), file=sys.stderr)
+        print(_color("   加 -f 覆盖，或修改 -n/-v 换个名称/版本保存。", C_GRAY, color), file=sys.stderr)
         return 3
     except RulePkgPermissionError as e:
         print(_color(f"❌ 权限错误: {e}", C_RED, color), file=sys.stderr)
@@ -626,6 +627,7 @@ def cmd_rule_import(args: argparse.Namespace) -> int:
         return 2
     except RulePkgConflictError as e:
         print(_color(f"⚠️  {e}", C_YELLOW, color), file=sys.stderr)
+        print(_color("   加 -f 强制覆盖，或用 -N/-V 改名导入。", C_GRAY, color), file=sys.stderr)
         print(_color("   （原有规则包未被修改）", C_GRAY, color), file=sys.stderr)
         return 3
     except RulePkgPermissionError as e:
@@ -710,8 +712,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_rule_import.add_argument("input", help="规则包导出文件路径 (.rulepkg.json)")
     p_rule_import.add_argument("--force", "-f", action="store_true",
                                help="强制覆盖已存在的同名同版本规则包")
-    p_rule_import.add_argument("--rename-name", help="重命名导入的规则包名称")
-    p_rule_import.add_argument("--rename-version", help="重命名导入的规则包版本")
+    p_rule_import.add_argument("--rename-name", "-N", help="重命名导入的规则包名称")
+    p_rule_import.add_argument("--rename-version", "-V", help="重命名导入的规则包版本")
     p_rule_import.set_defaults(func=cmd_rule_import)
 
     return parser
